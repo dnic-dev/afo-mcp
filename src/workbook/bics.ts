@@ -67,7 +67,7 @@ export function describeSelection(sel: XmlNode): string {
   const value = child(child(sel, 'VALUE'), 'MEMBER');
   const low = child(child(sel, 'LOW_VALUE'), 'MEMBER');
   const high = child(child(sel, 'HIGH_VALUE'), 'MEMBER');
-  if (op === 'BETWEEN' || op === 'NOT_BETWEEN') {
+  if (op === 'BETWEEN' || op === 'NOT_BETWEEN' || sel.attrs.type === 'INTERVAL' || (low && high)) {
     const prefix = op === 'NOT_BETWEEN' ? 'not ' : exclude;
     return `${prefix}${memberText(low ?? value)} .. ${memberText(high)}`;
   }
