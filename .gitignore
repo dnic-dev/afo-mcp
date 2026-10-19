@@ -1,0 +1,9 @@
+node_modules/
+dist/
+# Real workbooks are customer data: they stay on this machine and never enter the repository.
+samples/
+*.xlsx
+*.xlsm
+*.xlsb
+*.xls
+.env
