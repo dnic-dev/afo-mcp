@@ -149,6 +149,9 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
     else moduleNames.add(m.name.toUpperCase());
     if ((m?.code === undefined) === (m?.file === undefined)) errors.push(`${what} (${m?.name}): give either code or file.`);
   });
+  for (const [target, code] of Object.entries(s.documentModules ?? {})) {
+    if (typeof code !== 'string') errors.push(`documentModules.${target}: code must be text.`);
+  }
   for (const [shape, macro] of Object.entries(s.shapeMacros ?? {})) {
     const [mod, proc] = String(macro).split('.');
     if (!mod || !proc) errors.push(`shapeMacros.${shape}: macro must be Module.Procedure, got ${JSON.stringify(macro)}.`);
@@ -263,6 +266,7 @@ export function buildWorkbook(spec: BuildSpec, options: BuildOptions): BuildResu
   if (options.template && options.layout) throw new Error('Give either template or layout, not both: layout describes the generated minimal workbook.');
 
   const errors = validateSpec(spec, options.layout);
+  const hasVba = !!spec.vbaModules?.length || Object.keys(spec.documentModules ?? {}).length > 0;
   const warnings: string[] = [];
   let base: Uint8Array;
   let baseName: string;
@@ -282,8 +286,10 @@ export function buildWorkbook(spec: BuildSpec, options: BuildOptions): BuildResu
     if (missing.length) errors.push(`Sheet(s) not in the template: ${missing.join(', ')}. Template sheets: ${t.sheets.join(', ')}.`);
     const clash = (spec.vbaModules ?? []).filter((m) => t.codeNames.some((c) => c.toLowerCase() === m.name?.toLowerCase()));
     if (clash.length) errors.push(`VBA module name(s) used as code name of a sheet or the workbook in the template: ${clash.map((m) => m.name).join(', ')}.`);
-    if (t.hasVba && spec.vbaModules?.length) warnings.push('The template has a VBA project; it is replaced by the modules in the spec. Its macros are gone unless the spec lists them again.');
-    if (t.hasVba && !spec.vbaModules?.length && ext === '.xlsx') errors.push('The template has macros; write the output as .xlsm.');
+    const docMissing = Object.keys(spec.documentModules ?? {}).filter((n) => n !== 'ThisWorkbook' && !t.sheets.includes(n));
+    if (docMissing.length) errors.push(`documentModules for sheet(s) not in the template: ${docMissing.join(', ')}.`);
+    if (t.hasVba && hasVba) warnings.push('The template has a VBA project; it is replaced by the modules in the spec. Its macros are gone unless the spec lists them again.');
+    if (t.hasVba && !hasVba && ext === '.xlsx') errors.push('The template has macros; write the output as .xlsm.');
   } else {
     if (Object.keys(spec.shapeMacros ?? {}).length) errors.push('shapeMacros needs a template: the generated minimal layout has no shapes to click.');
     const sheets = layoutSheets(spec, options.layout);
@@ -294,7 +300,7 @@ export function buildWorkbook(spec: BuildSpec, options: BuildOptions): BuildResu
     base = errors.length ? new Uint8Array() : minimalWorkbook(sheets, options.layout?.cells);
     baseName = 'minimal layout';
   }
-  if (spec.vbaModules?.length && ext === '.xlsx') errors.push('VBA modules need an .xlsm output.');
+  if (hasVba && ext === '.xlsx') errors.push('VBA modules need an .xlsm output.');
   if (errors.length) throw new Error(`The workbook was not written:\n- ${errors.join('\n- ')}`);
 
   const vbaModules = (spec.vbaModules ?? []).map((m) => {

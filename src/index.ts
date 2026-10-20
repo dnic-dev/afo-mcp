@@ -199,6 +199,11 @@ const TOOLS = [
               },
             },
             shapeMacros: { type: 'object', additionalProperties: { type: 'string' }, description: 'Shape name in the template → Module.Procedure run on click.' },
+            documentModules: {
+              type: 'object',
+              additionalProperties: { type: 'string' },
+              description: 'Code of document modules by visible sheet name or ThisWorkbook: event handlers such as Worksheet_Change or Workbook_SheetChange.',
+            },
             vbaModules: {
               type: 'array',
               description: 'Standard modules. Source as code, or as file (absolute, or relative to spec_path).',

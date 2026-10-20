@@ -87,6 +87,11 @@ export interface AfoWorkbookSpec {
   shapeMacros?: Record<string, string>;
   /** Standard modules of a VBA project to add; turns the workbook into .xlsm. */
   vbaModules?: Array<{ name: string; code: string }>;
+  /**
+   * Code of document modules, by visible sheet name or `ThisWorkbook`: event handlers such as
+   * Worksheet_Change or Workbook_SheetChange. Turns the workbook into .xlsm like vbaModules.
+   */
+  documentModules?: Record<string, string>;
 }
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -262,6 +267,7 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
   let cpIndex = 900;
   const sheetIds = new Map<string, string>();
   const sheetCodeNames: string[] = [];
+  const codeNameBySheet = new Map<string, string>();
   const sheets = [...wb.matchAll(/<sheet [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)];
   sheets.forEach(([, name, rid], i) => {
     const part = 'xl/' + relTarget.get(rid)!.replace(/^\/?xl\//, '');
@@ -272,6 +278,7 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
       xml = /<sheetPr/.test(xml) ? xml.replace('<sheetPr', `<sheetPr codeName="${codeName}"`) : xml.replace(/(<worksheet[^>]*>)/, `$1<sheetPr codeName="${codeName}"/>`);
     }
     sheetCodeNames.push(codeName);
+    codeNameBySheet.set(name.replace(/&amp;/g, '&'), codeName);
     const afoId = `${codeName}|${guid()}`;
     sheetIds.set(name.replace(/&amp;/g, '&'), afoId);
     const a = ++cpIndex, b = ++cpIndex;
@@ -313,12 +320,18 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
   ct = ct.replace('</Types>', `${cpOverrides}<Override PartName="/xl/worksheets/sheet900.xml" ContentType="${CT_WS}"/></Types>`);
 
   // VBA project: document modules for the workbook and each sheet, plus the standard modules.
-  if (spec.vbaModules?.length) {
+  const docCode = new Map<string, string>();
+  for (const [target, code] of Object.entries(spec.documentModules ?? {})) {
+    const codeName = target === 'ThisWorkbook' ? workbookCodeName : codeNameBySheet.get(target);
+    if (!codeName) throw new Error(`Sheet not found for document module code: ${target}`);
+    docCode.set(codeName, code);
+  }
+  if (spec.vbaModules?.length || docCode.size) {
     const modules: VbaModuleSource[] = [
-      { name: workbookCodeName, type: 'document', document: 'workbook', code: '' },
-      ...sheetCodeNames.map((n): VbaModuleSource => ({ name: n, type: 'document', document: 'sheet', code: '' })),
+      { name: workbookCodeName, type: 'document', document: 'workbook', code: docCode.get(workbookCodeName) ?? '' },
+      ...sheetCodeNames.map((n): VbaModuleSource => ({ name: n, type: 'document', document: 'sheet', code: docCode.get(n) ?? '' })),
       { name: 'AfoDefinition', type: 'document', document: 'sheet', code: '' },
-      ...spec.vbaModules.map((m): VbaModuleSource => ({ name: m.name, type: 'standard', code: m.code })),
+      ...(spec.vbaModules ?? []).map((m): VbaModuleSource => ({ name: m.name, type: 'standard', code: m.code })),
     ];
     parts['xl/vbaProject.bin'] = writeVbaProject(modules);
     if (!/vbaProject\.bin/.test(rels)) rels = rels.replace('</Relationships>', relXml('rIdVba', REL_VBA, 'vbaProject.bin') + '</Relationships>');
