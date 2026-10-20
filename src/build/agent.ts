@@ -6,6 +6,9 @@
 // command cell; Workbook_SheetCalculate picks the command up and AfoAgent runs it outside the
 // event (Application.OnTime). Values written there through VBA raise real Change events, which
 // AfO accepts as input (tested on BW/4HANA with AfO 2.8).
+//
+// Reading needs no command: AfO's read functions are worksheet formulas, which AfO evaluates
+// whoever writes them. The bridge sheet keeps live lists and a free area for such formulas.
 
 import type { AfoWorkbookSpec } from './afo.js';
 
@@ -20,6 +23,8 @@ export interface AgentCommandSpec {
 export interface AgentBridgeSpec {
   /** Name of the bridge sheet (default AgentLog). */
   sheet?: string;
+  /** Hide the bridge sheet; agents find it through the defined names. */
+  hidden?: boolean;
   /** Workbook-specific commands, each running a macro (e.g. the macro behind a button). */
   commands?: AgentCommandSpec[];
 }
@@ -29,18 +34,52 @@ export const AGENT_SHEET_CODE_NAME = 'AfoAgentSheet';
 export const DEFAULT_AGENT_SHEET = 'AgentLog';
 export const AGENT_NAMES = { command: 'AfoAgentCommand', result: 'AfoAgentResult', status: 'AfoAgentStatus' } as const;
 
+/** Log rows kept; older rows are dropped in blocks. */
+const LOG_KEEP = 500;
+
 /** Generic commands; workbook commands must not reuse these words. */
 export const BUILTIN_COMMANDS: Array<[string, string]> = [
-  ['SET Sheet!A1=value', 'Write a value as user input (Analysis for Office registers it). Decimal point, no thousands separator. Empty value clears the cell. A range writes the same value into every cell.'],
-  ['TRANSFER', 'Send changed input values to the server without running a planning function.'],
+  ['SET Sheet!A1=value', 'Write a value as user input (Analysis for Office registers it). Decimal point, no thousands separator. Empty value clears the cell. A range writes the same value into every cell. Values are checked when they are transferred: follow with TRANSFER or a planning function.'],
+  ['TRANSFER', 'Send changed input values to the server and check them, without running a planning function.'],
   ['PLAN key', 'Run a planning function or sequence by its key (PF_1, PS_1, ...).'],
+  ['PVAR key NAME=value', 'Set a variable of a planning function or sequence, value as typed in the prompt.'],
   ['VAR DS_1 NAME=value', 'Set a variable of a data source, value in external format as typed in the prompt (01.2025, 01.2025 - 12.2025). Consecutive VAR steps are submitted together.'],
   ['FILTER DS_1 DIMENSION=value', 'Filter a characteristic, value as typed in the filter dialog. ";" separates commands, so one value or one interval (a - b) per FILTER step.'],
-  ['REFRESH', 'Refresh all data sources (REFRESH DS_1: one data source).'],
+  ['REFRESH', 'Refresh all data sources (REFRESH DS_1: one data source). Set mandatory variables with VAR first, or the prompt dialog opens.'],
   ['SAVE', 'Save plan data to the server.'],
   ['RESET', 'Discard unsaved plan data.'],
 ];
-const BUILTIN_WORDS = new Set(['SET', 'TRANSFER', 'PLAN', 'VAR', 'FILTER', 'REFRESH', 'SAVE', 'RESET']);
+const BUILTIN_WORDS = new Set(BUILTIN_COMMANDS.map(([c]) => c.split(' ')[0]));
+
+const RULES = [
+  'Ask the user before SAVE and before RESET.',
+  'Selection ambiguous (a member under several parents, several matching rows)? Ask before writing.',
+  'Write only input-ready cells of input-ready crosstabs. For changes to many cells prefer a planning function.',
+  'After SET, run TRANSFER or a planning function and check B3: rejected values (data slices, characteristic relationships, locks) turn the step into ERROR.',
+  'B3 still says "running" after 30 seconds: a dialog is probably open in Excel; ask the user to look.',
+  'B4 is not "active": macros are disabled; ask the user to enable content and reopen.',
+];
+
+const READING: Array<[string, string]> = [
+  ['=SAPListOfVariables("DS_1")', 'Variables of a data source with their values (planning objects: =SAPListOfVariables("PF_1",,"PLAN_PARAMETER")).'],
+  ['=SAPGetVariable("DS_1","NAME","VALUEASKEY")', 'One variable value.'],
+  ['=SAPListOfEffectiveFilters("DS_1")', 'Current filters of a data source.'],
+  ['=SAPListOfDimensions("DS_1")', 'Dimensions with their axis (ROWS, COLUMNS, free).'],
+  ['=SAPListOfMembers("DS_1","DIMENSION")', 'Members of a dimension.'],
+  ['=SAPGetSourceInfo("DS_1","DataSourceName")', 'Description of a data source.'],
+];
+
+/** Fixed cells of the bridge sheet. Messages and live lists are formulas the bridge sets once AfO is loaded. */
+const LAYOUT = {
+  messages: { col: 'F', headers: ['#', 'Message', 'Class', 'Message ID', 'Severity', 'Object', 'Technical name', '', '', 'System'] },
+  lists: [
+    { col: 'Q', title: 'Data sources (live)', formula: '=SAPListOf("DATASOURCES")' },
+    { col: 'T', title: 'Planning functions (live)', formula: '=SAPListOf("PLANNINGFUNCTIONS")' },
+    { col: 'W', title: 'Planning sequences (live)', formula: '=SAPListOf("PLANNINGSEQUENCES")' },
+    { col: 'Z', title: 'Crosstabs (live)', formula: '=SAPListOf("CROSSTABS")' },
+  ],
+  readArea: { col: 'AD', title: 'Free cells for read formulas (from AD2); delete them afterwards' },
+};
 
 export function agentSheetName(spec: AfoWorkbookSpec): string {
   return spec.agentBridge?.sheet?.trim() || DEFAULT_AGENT_SHEET;
@@ -79,23 +118,66 @@ export function agentModuleCode(spec: AfoWorkbookSpec, logFirstRow: number): str
   const custom = (spec.agentBridge?.commands ?? [])
     .map((c) => `    Case ${vbaString(c.name)}: RunOne = RunMacro(${vbaString(c.macro)})`)
     .join('\r\n');
+  const formulas = [
+    `    PutFormula "${LAYOUT.messages.col}2", "=SAPListOfMessages(""INFORMATION"",""TRUE"")"`,
+    ...LAYOUT.lists.map((l) => `    PutFormula "${l.col}2", ${vbaString(l.formula)}`),
+  ].join('\r\n');
   return `Option Explicit
 
 ' Agent bridge, generated by afo-mcp. An agent writes commands into the cell ${AGENT_NAMES.command}
 ' (${sheet}!B1), several separated by ";". The bridge sheet lists the commands and logs every step.
 ' Office.js writes raise no Change event, so Analysis for Office ignores them; they do raise
 ' Calculate, which hands the command to this module. Values written here through VBA count as
-' user input.
+' user input. After every AfO step new AfO messages are logged; errors fail the step.
 
 Public Const BRIDGE_SHEET As String = ${vbaString(sheet)}
 Private Const LOG_FIRST_ROW As Long = ${logFirstRow}
+Private Const LOG_KEEP As Long = ${LOG_KEEP}
 Public Busy As Boolean
 Private pending As String
 Private variablesPaused As Boolean
 Private lastMessage As String
+Private initTries As Long
 
 Public Sub MarkActive()
     SetCell "B4", "active"
+    initTries = 0
+    ScheduleInit
+End Sub
+
+Private Sub ScheduleInit()
+    Application.OnTime Now + TimeSerial(0, 0, 3), "'" & Replace(ThisWorkbook.Name, "'", "''") & "'!${AGENT_MODULE}.InitFormulas"
+End Sub
+
+' Messages and live lists are AfO formulas; they can only be entered once AfO is loaded.
+Public Sub InitFormulas()
+    initTries = initTries + 1
+    If Not AfoReady() Then
+        If initTries < 40 Then ScheduleInit
+        Exit Sub
+    End If
+    EnsureFormulas
+End Sub
+
+Private Function AfoReady() As Boolean
+    On Error GoTo nope
+    Dim v As Variant: v = Application.Run("SAPGetProperty", "IsConnected")
+    AfoReady = True
+nope:
+End Function
+
+Private Sub EnsureFormulas()
+${formulas}
+End Sub
+
+Private Sub PutFormula(ByVal address As String, ByVal formula As String)
+    Dim cell As Range: Set cell = ThisWorkbook.Worksheets(BRIDGE_SHEET).Range(address)
+    If cell.HasFormula Then Exit Sub
+    Busy = True
+    On Error Resume Next
+    cell.Formula = formula
+    On Error GoTo 0
+    Busy = False
 End Sub
 
 Public Sub OnCalculate()
@@ -116,7 +198,7 @@ End Sub
 Public Sub RunPending()
     Dim cmd As String: cmd = pending: pending = ""
     If cmd = "" Then Exit Sub
-    EnsureMessages
+    EnsureFormulas
     Dim steps() As String: steps = Split(cmd, ";")
     Dim i As Long, n As Long, stepText As String
     For i = 0 To UBound(steps)
@@ -144,6 +226,8 @@ Private Function RunOne(ByVal stepText As String) As Boolean
         verb = UCase$(stepText)
     End If
     lastMessage = ""
+    Dim before As Object
+    If verb <> "SET" Then Set before = MessageKeys()
     On Error GoTo failed
     Select Case verb
     Case "SET": RunOne = DoSet(rest)
@@ -153,6 +237,7 @@ Private Function RunOne(ByVal stepText As String) As Boolean
     Case "REFRESH"
         If rest = "" Then RunOne = Check(Application.Run("SAPExecuteCommand", "Refresh")) Else RunOne = Check(Application.Run("SAPExecuteCommand", "Refresh", rest))
     Case "PLAN": RunOne = DoPlan(rest)
+    Case "PVAR": RunOne = DoPlanVar(rest)
     Case "VAR": RunOne = DoVar(rest)
     Case "FILTER": RunOne = DoFilter(rest)
 ${custom}
@@ -160,6 +245,14 @@ ${custom}
         lastMessage = "unknown command " & verb
         RunOne = False
     End Select
+    On Error GoTo 0
+    If Not before Is Nothing Then
+        Dim problems As String: problems = NewMessages(before)
+        If problems <> "" Then
+            If RunOne Or lastMessage = "" Then lastMessage = problems
+            RunOne = False
+        End If
+    End If
     LogLine IIf(RunOne, "OK", "ERROR"), stepText, lastMessage
     Exit Function
 failed:
@@ -203,14 +296,21 @@ Private Function IsSequence(ByVal key As String) As Boolean
     If IsArray(list) Then
         If ArrayRank(list) = 2 Then
             For i = LBound(list, 1) To UBound(list, 1)
-                If UCase$(CStr(list(i, LBound(list, 2)))) = UCase$(key) Then IsSequence = True: Exit Function
+                If UCase$(Txt(list(i, LBound(list, 2)))) = UCase$(key) Then IsSequence = True: Exit Function
             Next i
         Else
-            If UCase$(CStr(list(LBound(list)))) = UCase$(key) Then IsSequence = True: Exit Function
+            If UCase$(Txt(list(LBound(list)))) = UCase$(key) Then IsSequence = True: Exit Function
         End If
     End If
 none:
     If Not IsSequence Then IsSequence = (UCase$(Left$(key, 3)) = "PS_")
+End Function
+
+Private Function DoPlanVar(ByVal rest As String) As Boolean
+    Dim sp As Long: sp = InStr(rest, " ")
+    Dim eq As Long: eq = InStr(rest, "=")
+    If sp = 0 Or eq < sp Then lastMessage = "form: PVAR PF_1 NAME=value": Exit Function
+    DoPlanVar = Check(Application.Run("SAPSetPlanParameter", Trim$(Left$(rest, sp - 1)), Trim$(Mid$(rest, sp + 1, eq - sp - 1)), Trim$(Mid$(rest, eq + 1))))
 End Function
 
 Private Function DoVar(ByVal rest As String) As Boolean
@@ -235,7 +335,7 @@ End Sub
 Private Function DoFilter(ByVal rest As String) As Boolean
     Dim sp As Long: sp = InStr(rest, " ")
     Dim eq As Long: eq = InStr(rest, "=")
-    If sp = 0 Or eq < sp Then lastMessage = "form: FILTER DS_1 DIMENSION=values": Exit Function
+    If sp = 0 Or eq < sp Then lastMessage = "form: FILTER DS_1 DIMENSION=value": Exit Function
     DoFilter = Check(Application.Run("SAPSetFilter", Trim$(Left$(rest, sp - 1)), Trim$(Mid$(rest, sp + 1, eq - sp - 1)), Trim$(Mid$(rest, eq + 1)), "INPUT_STRING"))
 End Function
 
@@ -250,11 +350,69 @@ End Function
 
 ' AfO API calls return 1 on success.
 Private Function Check(ByVal result As Variant) As Boolean
-    Check = (CStr(result) = "1")
+    Check = (Txt(result) = "1")
     If Not Check Then
         On Error Resume Next
-        lastMessage = CStr(Application.Run("SAPGetProperty", "LastError", "Text"))
+        lastMessage = Txt(Application.Run("SAPGetProperty", "LastError", "Text"))
     End If
+End Function
+
+' The AfO messages currently listed, one key per message (all fields joined).
+Private Function MessageKeys() As Object
+    Dim keys As Object: Set keys = CreateObject("Scripting.Dictionary")
+    Dim row As Variant
+    For Each row In MessageRows()
+        keys(Join(row, "|")) = True
+    Next row
+    Set MessageKeys = keys
+End Function
+
+' Logs the messages that are not in before; returns the texts of new errors.
+Private Function NewMessages(ByVal before As Object) As String
+    Dim row As Variant, i As Long, severity As String, text As String, problems As String
+    For Each row In MessageRows()
+        If Not before.Exists(Join(row, "|")) Then
+            severity = "": text = ""
+            For i = LBound(row) To UBound(row)
+                Select Case UCase$(row(i))
+                Case "CRITICAL", "ERROR", "WARNING", "INFORMATION", "SUCCESS": If severity = "" Then severity = UCase$(row(i))
+                End Select
+            Next i
+            If UBound(row) >= 1 Then text = row(1) Else text = row(0)
+            LogLine "MESSAGE", severity, text
+            If severity = "ERROR" Or severity = "CRITICAL" Then
+                If problems <> "" Then problems = problems & " / "
+                problems = problems & text
+            End If
+        End If
+    Next row
+    NewMessages = problems
+End Function
+
+' SAPListOfMessages as rows of text fields: one row for a single message, none without messages.
+Private Function MessageRows() As Collection
+    Dim rows As New Collection, v As Variant, i As Long, j As Long, f() As String
+    On Error GoTo done
+    v = Application.Run("SAPListOfMessages", "INFORMATION", "TRUE")
+    If Not IsArray(v) Then GoTo done
+    If ArrayRank(v) = 2 Then
+        For i = LBound(v, 1) To UBound(v, 1)
+            ReDim f(0 To UBound(v, 2) - LBound(v, 2))
+            For j = LBound(v, 2) To UBound(v, 2): f(j - LBound(v, 2)) = Txt(v(i, j)): Next j
+            rows.Add f
+        Next i
+    Else
+        ReDim f(0 To UBound(v) - LBound(v))
+        For j = LBound(v) To UBound(v): f(j - LBound(v)) = Txt(v(j)): Next j
+        rows.Add f
+    End If
+done:
+    Set MessageRows = rows
+End Function
+
+Private Function Txt(ByVal v As Variant) As String
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Or IsObject(v) Then Exit Function
+    Txt = CStr(v)
 End Function
 
 Private Function ArrayRank(ByVal a As Variant) As Long
@@ -268,28 +426,22 @@ done:
     ArrayRank = r - 1
 End Function
 
-' Messages of Analysis for Office appear in the bridge sheet instead of the message dialog.
-Private Sub EnsureMessages()
-    Dim ws As Worksheet: Set ws = ThisWorkbook.Worksheets(BRIDGE_SHEET)
-    If ws.Range("F2").HasFormula Then Exit Sub
-    Busy = True
-    On Error Resume Next
-    ws.Range("F2").Formula = "=SAPListOfMessages(""INFORMATION"",""TRUE"")"
-    On Error GoTo 0
-    Busy = False
-End Sub
-
 Private Sub SetCell(ByVal address As String, ByVal value As Variant)
     Busy = True
     ThisWorkbook.Worksheets(BRIDGE_SHEET).Range(address).Value = value
     Busy = False
 End Sub
 
+' One log line; the oldest rows go once the log holds more than LOG_KEEP.
 Private Sub LogLine(ByVal kind As String, ByVal target As String, ByVal detail As String)
     Dim ws As Worksheet: Set ws = ThisWorkbook.Worksheets(BRIDGE_SHEET)
     Dim r As Long: r = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
     If r < LOG_FIRST_ROW Then r = LOG_FIRST_ROW
     Busy = True
+    If r - LOG_FIRST_ROW >= LOG_KEEP Then
+        ws.Range(ws.Cells(LOG_FIRST_ROW, 1), ws.Cells(LOG_FIRST_ROW + 99, 4)).Delete Shift:=xlUp
+        r = r - 100
+    End If
     ws.Cells(r, 1).Value = "'" & Format$(Now, "yyyy-mm-dd hh:nn:ss")
     ws.Cells(r, 2).Value = kind
     ws.Cells(r, 3).Value = "'" & target
@@ -315,41 +467,64 @@ End Sub
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+/** Column letters → zero-based index. */
+function colIndex(letters: string): number {
+  return [...letters].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
+}
+function colLetters(index: number): string {
+  let s = '';
+  for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+  return s;
+}
+
 /** The bridge sheet as written into the package, and the first row of its log. */
 export function agentSheetXml(spec: AfoWorkbookSpec): { xml: string; logFirstRow: number } {
-  const rows: Array<Array<{ v?: string; f?: string; bold?: boolean }>> = [];
-  const put = (...cells: Array<string | { v?: string; f?: string; bold?: boolean }>) =>
-    rows.push(cells.map((c) => (typeof c === 'string' ? { v: c } : c)));
-  put({ v: 'Command', bold: true }, '', '', '', { v: 'AfO messages', bold: true });
+  type Cell = { v?: string; f?: string };
+  const rows: Array<Map<number, Cell>> = [];
+  const put = (...cells: Array<string | Cell>) => {
+    rows.push(new Map(cells.map((c, i) => [i, typeof c === 'string' ? { v: c } : c])));
+  };
+  put('Command');
   put('Trigger', { f: 'LEN(B1)' });
   put('Result', '');
   put('Bridge', 'inactive: enable macros (content) for this workbook');
   put('');
-  put({ v: 'Write a command into B1, several separated by ";". B1 empties when the bridge takes it; B3 shows the result, the log below every step.', bold: false });
+  put('Write a command into B1, several separated by ";". B1 empties when the bridge takes it; B3 shows the result, the log below every step and every AfO message.');
   put('Values written straight into cells by an add-in (Office.js) are not seen by Analysis for Office: write plan values with SET.');
   put('');
-  put({ v: 'Commands', bold: true });
+  put('Commands');
   for (const [cmd, text] of BUILTIN_COMMANDS) put(cmd, text);
   for (const c of spec.agentBridge?.commands ?? []) put(c.name, `${c.description ?? 'Workbook command'} (runs ${c.macro}).`);
   put('');
-  put({ v: 'This workbook', bold: true });
+  put('Rules');
+  for (const r of RULES) put('', r);
+  put('');
+  put('Reading', 'AfO read functions are formulas: write them into free cells from AD2, read the result, delete them.');
+  for (const [f, text] of READING) put(f, text);
+  put('');
+  put('This workbook (as built; live lists from column Q)');
   for (const dp of spec.dataProviders) put(dp.key, `Data source on query ${dp.query}${dp.inputReady ?? true ? ', input-ready' : ''}.`);
   for (const pf of spec.planningFunctions ?? []) put(pf.key, `Planning function ${pf.name}${pf.description ? `: ${pf.description}` : ''} (on ${pf.dataProviderKey}).`);
   for (const g of spec.grids) put(g.key, `Crosstab of ${g.dataProviderKey}, top left ${g.sheet}!${g.cell}.`);
   put('');
-  put({ v: 'Time', bold: true }, { v: 'Event', bold: true }, { v: 'Step', bold: true }, { v: 'Detail', bold: true });
+  put('Time', 'Event', 'Step', 'Detail');
   const logFirstRow = rows.length + 1;
 
-  const col = (i: number) => String.fromCharCode(65 + i);
-  const data = rows.map((cells, r) => `<row r="${r + 1}">${cells.map((c, i) => {
-    const ref = `${col(i)}${r + 1}`;
+  // Headers of the message area, the live lists and the read area in row 1.
+  const first = rows[0];
+  LAYOUT.messages.headers.forEach((h, i) => { if (h) first.set(colIndex(LAYOUT.messages.col) + i, { v: h }); });
+  for (const l of LAYOUT.lists) first.set(colIndex(l.col), { v: l.title });
+  first.set(colIndex(LAYOUT.readArea.col), { v: LAYOUT.readArea.title });
+
+  const data = rows.map((cells, r) => `<row r="${r + 1}">${[...cells.entries()].sort((a, b) => a[0] - b[0]).map(([i, c]) => {
+    const ref = `${colLetters(i)}${r + 1}`;
     if (c.f) return `<c r="${ref}"><f>${esc(c.f)}</f></c>`;
     if (!c.v) return '';
     return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${esc(c.v)}</t></is></c>`;
   }).join('')}</row>`).join('');
   const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`
     + `<sheetPr codeName="${AGENT_SHEET_CODE_NAME}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/>`
-    + `<cols><col min="1" max="1" width="30" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/><col min="3" max="3" width="40" customWidth="1"/><col min="4" max="4" width="60" customWidth="1"/></cols>`
+    + `<cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/><col min="3" max="3" width="40" customWidth="1"/><col min="4" max="4" width="60" customWidth="1"/></cols>`
     + `<sheetData>${data}</sheetData><pageMargins left="0.7" right="0.7" top="0.787401575" bottom="0.787401575" header="0.3" footer="0.3"/></worksheet>`;
   return { xml, logFirstRow };
 }

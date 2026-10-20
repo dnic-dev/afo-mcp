@@ -201,9 +201,10 @@ const TOOLS = [
             shapeMacros: { type: 'object', additionalProperties: { type: 'string' }, description: 'Shape name in the template → Module.Procedure run on click.' },
             agentBridge: {
               type: 'object',
-              description: 'Adds a command cell for agents such as Claude in Excel, whose cell writes Analysis for Office does not register: a bridge sheet (default AgentLog) with command cell B1 (defined name AfoAgentCommand), result B3, status B4, help, AfO messages and a step log, plus VBA that runs SET Sheet!A1=value, TRANSFER, PLAN key, VAR DS NAME=value, FILTER DS DIM=value, REFRESH, SAVE, RESET and workbook commands. Needs an .xlsm output.',
+              description: 'Adds a command cell for agents such as Claude in Excel, whose cell writes Analysis for Office does not register: a bridge sheet (default AgentLog) with command cell B1 (defined name AfoAgentCommand), result B3, status B4, help, AfO messages and a step log, plus VBA that runs SET Sheet!A1=value, TRANSFER, PLAN key, PVAR key NAME=value, VAR DS NAME=value, FILTER DS DIM=value, REFRESH, SAVE, RESET and workbook commands. New AfO messages are logged after every step and errors fail it. Reading needs no command: the sheet explains the AfO read formulas and keeps live lists of data sources and planning objects. Needs an .xlsm output.',
               properties: {
                 sheet: { type: 'string', description: 'Name of the bridge sheet (default AgentLog).' },
+                hidden: { type: 'boolean', description: 'Hide the bridge sheet; agents find it through the defined names AfoAgentCommand, AfoAgentResult, AfoAgentStatus.' },
                 commands: {
                   type: 'array',
                   description: 'Workbook commands, each running a macro, e.g. the macro behind a button.',

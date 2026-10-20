@@ -269,6 +269,12 @@ test('agentBridge adds the bridge sheet, defined names, the AfoAgent module and 
   const agent = d.macros.modules.find((m) => m.name === 'AfoAgent').source;
   assert.match(agent, /Case "RUN_IT": RunOne = RunMacro\("Module1\.Run"\)/);
   assert.match(agent, /Private Const LOG_FIRST_ROW As Long = \d+/);
+  assert.match(agent, /Case "PVAR": RunOne = DoPlanVar\(rest\)/);
+  assert.match(agent, /PutFormula "Q2", "=SAPListOf\(""DATASOURCES""\)"/);
+  assert.match(sheet, /Ask the user before SAVE/);
+  assert.match(sheet, /SAPListOfVariables/);
+  assert.match(sheet, /<c r="Q1" t="inlineStr"><is><t xml:space="preserve">Data sources \(live\)/);
+  assert.doesNotMatch(wb, /state="hidden"/);
   assert.ok(d.macros.modules.some((m) => m.name === 'AfoAgentSheet'));
 }));
 
@@ -285,4 +291,6 @@ test('agentBridge validation names conflicts with built-ins, modules and handler
     for (const re of [/SAVE is a built-in command/, /name must be upper case/, /module Missing is not among vbaModules/, /defines Workbook_Open/, /also a layout or crosstab sheet/]) assert.match(err.message, re);
   }
   assert.throws(() => buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, agentBridge: {} }, { output: join(dir, 'y.xlsx') }), /\.xlsm/);
+  buildWorkbook({ ...MINIMAL_SPEC, agentBridge: { hidden: true } }, { output: join(dir, 'h.xlsm') });
+  assert.match(strFromU8(unzipSync(readFileSync(join(dir, 'h.xlsm')))['xl/workbook.xml']), /<sheet name="AgentLog" sheetId="2" r:id="rIdAfoAgent" state="hidden"\/>/);
 }));

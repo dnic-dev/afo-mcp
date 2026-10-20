@@ -267,7 +267,7 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
     if (existing.some((n) => n.toLowerCase() === bridge.name.toLowerCase())) throw new Error(`The workbook already has a sheet ${bridge.name}; choose another agentBridge.sheet.`);
     const ids = [...wb.matchAll(/<sheet [^>]*sheetId="(\d+)"/g)].map((m) => Number(m[1])).filter((n) => n < 900);
     parts['xl/worksheets/afoAgent.xml'] = strToU8(bridge.xml);
-    wb = wb.replace('</sheets>', () => `<sheet name="${esc(bridge.name)}" sheetId="${Math.max(0, ...ids) + 1}" r:id="rIdAfoAgent"/></sheets>`);
+    wb = wb.replace('</sheets>', () => `<sheet name="${esc(bridge.name)}" sheetId="${Math.max(0, ...ids) + 1}" r:id="rIdAfoAgent"${spec.agentBridge?.hidden ? ' state="hidden"' : ''}/></sheets>`);
     wbRels = wbRels.replace('</Relationships>', () => relXml('rIdAfoAgent', REL_WS, 'worksheets/afoAgent.xml') + '</Relationships>');
   }
   const relTarget = new Map([...wbRels.matchAll(/<Relationship [^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map((m) => [m[1], m[2]]));
