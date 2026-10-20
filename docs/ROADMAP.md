@@ -153,7 +153,8 @@ on it built with afo-mcp, to prove the bridge generic case by case:
 ### F. Skills
 
 - [ ] Workbook skill (company design): `agentBridge` by default in planning workbooks.
-- [ ] Planning skill for Claude in Excel: how to understand a workbook (`SAPListOf`, bridge help),
+- [ ] Planning skill for Claude in Excel *(draft: `skills/afo-agentic-planning/SKILL.md`, to be
+      reviewed and uploaded to the claude.ai account)*: how to understand a workbook (`SAPListOf`, bridge help),
       the rules from A, and how bw-modeling-mcp adds context. Check confidentiality before customer
       knowledge goes into an account-wide skill.
 - [ ] Best-practice skill for planning models on the bw-modeling-mcp side, including the toolkit
