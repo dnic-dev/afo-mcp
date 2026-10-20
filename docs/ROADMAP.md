@@ -76,25 +76,25 @@ to cover what a planner can do in AfO with keyboard and mouse.
 
 ### A. Harden the bridge
 
-- [ ] **Rejected input:** after `SET`/`TRANSFER`/`PLAN`, read the AfO messages; an error or a
+- [x] **Rejected input:** *(implemented; live test with a data slice pending)* after `SET`/`TRANSFER`/`PLAN`, read the AfO messages; an error or a
       rejected value (data slice, characteristic relationship, lock) makes the step fail. Today
       `SET` reports OK even when AfO discards the value afterwards.
-- [ ] **`PVAR key NAME=value`:** variables of planning functions and sequences
+- [x] **`PVAR key NAME=value`:** *(implemented; live test pending)* variables of planning functions and sequences
       (`SAPSetPlanParameter`).
 - [ ] **Dialog guard:** no command may hang on a dialog (prompt dialog on refresh, message
       dialog, confirmations). Prompts: require `VAR` first or detect and report. Messages: through
       `SAPListOfMessages`; check whether the `BeforeMessageDisplay` callback with
       `SAPSuppressMessage` is needed.
-- [ ] **`READ`:** cell context (`SAPGetCellInfo`: which members a cell stands for), changed and
+- [x] **Reading** needs no command: the read functions are formulas; the bridge sheet explains them and offers a free area. Cell context (`SAPGetCellInfo`: which members a cell stands for), changed and
       unsaved values (`SAPGetChangedMeasures`), variables (`SAPListOfVariables`, `SAPGetVariable`),
       filters (`SAPListOfEffectiveFilters`), dimensions and axes (`SAPListOfDimensions`).
-- [ ] **Rules in the help text:** ambiguous selection → ask first; always confirm before `SAVE`;
+- [x] **Rules in the help text:** ambiguous selection → ask first; always confirm before `SAVE`;
       change input-ready cells only; prefer planning functions for mass changes.
-- [ ] **Live help:** on open, refresh the list of data sources, planning objects and crosstabs
+- [x] **Live help:** *(live lists confirmed in AfO)* on open, refresh the list of data sources, planning objects and crosstabs
       from `SAPListOf`, so objects added by hand appear too.
-- [ ] Message area with column headers; log trimmed to the last few hundred rows.
-- [ ] Option `hidden`: bridge sheet hidden; agents find it through the defined names. Test with
-      Claude in Excel.
+- [x] Message area with column headers; log trimmed to the last few hundred rows.
+- [x] Option `hidden`: bridge sheet hidden; agents find it through the defined names. *(Test with
+      Claude in Excel pending.)*
 
 ### B. Navigation and design through the bridge
 
@@ -125,12 +125,14 @@ on it built with afo-mcp, to prove the bridge generic case by case:
 
 ### D. afo-mcp: change existing workbooks
 
-- [ ] **Patch instead of rebuild:** a tool that changes an existing workbook and keeps everything
+- [x] **Patch instead of rebuild:** `afo_update_workbook`. a tool that changes an existing workbook and keeps everything
       else (layout, formulas, existing macros, AfO definition).
-- [ ] Retrofit the agent bridge into an existing workbook, merging it into the existing VBA
-      project (limits: user forms, signed projects).
-- [ ] Insert a planning function or sequence (bound to a data source), a data source with
-      crosstab, change prompts and axes.
+- [x] Retrofit the agent bridge into an existing workbook, merging it into the existing VBA
+      project (existing handlers get one call; signed projects are refused). Tested with an
+      Excel-compiled project; AfO recognises the result.
+- [x] Insert a planning function (bound to an existing data source). *(Run time test with logon
+      pending.)*
+- [ ] Insert a planning sequence, a data source with crosstab, change prompts and axes.
 - [ ] AfO conditional formatting (exceptions), AfO charts, number of new lines, filter components
       (`SAPSetFilterComponent` items); learn each format from a workbook AfO saved itself.
 - [ ] **Planning toolkit:** a spec preset that binds a set of generic planning functions (revalue

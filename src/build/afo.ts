@@ -100,8 +100,8 @@ export interface AfoWorkbookSpec {
   agentBridge?: AgentBridgeSpec;
 }
 
-const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const guid = () => randomUUID().replace(/-/g, '');
+export const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+export const guid = () => randomUUID().replace(/-/g, '');
 const tf = (b: boolean | undefined) => (b ? 'True' : 'False');
 
 /** A1 → zero-based row and column. */
@@ -137,7 +137,7 @@ function range(name: string, sheetId: string, cell: string): string {
   return `<Range Name="${name}"><SheetName>${esc(sheetId)}</SheetName>${c}</Range>`;
 }
 
-function planningFunction(pf: PlanningFunctionSpec, system: string, today: string): string {
+export function planningFunction(pf: PlanningFunctionSpec, system: string, today: string): string {
   const vars = `<?xml version="1.0" encoding="UTF-8" standalone="no" ?><VARIABLES>${(pf.variables ?? [])
     .map((v) => `<VARIABLE name="${esc(v.name)}" type="INFO_OBJECT_MEMBER" isStateVariable="false"><SELECTIONS><SELECTION type="SINGLE_MEMBER"><MEMBER name="${esc(v.value)}" type="MEMBER" /></SELECTION></SELECTIONS></VARIABLE>`)
     .join('')}</VARIABLES>`;
@@ -223,27 +223,27 @@ export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, str
     + `<DataProviders>${dps}</DataProviders>` + (pfs ? `<PlanningObjects>${pfs}</PlanningObjects>` : '') + `<Items>${grids}</Items></com.sap.ip.bi.pioneer></Application>`;
 }
 
-const REL_CP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customProperty';
-const REL_WS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet';
-const REL_VBA = 'http://schemas.microsoft.com/office/2006/relationships/vbaProject';
-const CT_WS = 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
-const CT_CP = 'application/vnd.openxmlformats-officedocument.spreadsheetml.customProperty';
-const CT_MACRO_MAIN = 'application/vnd.ms-excel.sheet.macroEnabled.main+xml';
-const CT_VBA = 'application/vnd.ms-office.vbaProject';
+export const REL_CP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customProperty';
+export const REL_WS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet';
+export const REL_VBA = 'http://schemas.microsoft.com/office/2006/relationships/vbaProject';
+export const CT_WS = 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
+export const CT_CP = 'application/vnd.openxmlformats-officedocument.spreadsheetml.customProperty';
+export const CT_MACRO_MAIN = 'application/vnd.ms-excel.sheet.macroEnabled.main+xml';
+export const CT_VBA = 'application/vnd.ms-office.vbaProject';
 
-const utf16 = (s: string) => new Uint8Array(Buffer.from(s, 'utf16le'));
-const relXml = (id: string, type: string, target: string) => `<Relationship Id="${id}" Type="${type}" Target="${target}"/>`;
-const relsDoc = (items: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${items}</Relationships>`;
+export const utf16 = (s: string) => new Uint8Array(Buffer.from(s, 'utf16le'));
+export const relXml = (id: string, type: string, target: string) => `<Relationship Id="${id}" Type="${type}" Target="${target}"/>`;
+export const relsDoc = (items: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${items}</Relationships>`;
 
-function addRels(parts: Record<string, Uint8Array>, relsPath: string, items: string) {
+export function addRels(parts: Record<string, Uint8Array>, relsPath: string, items: string) {
   parts[relsPath] = strToU8(parts[relsPath] ? strFromU8(parts[relsPath]).replace('</Relationships>', `${items}</Relationships>`) : relsDoc(items));
 }
 
-function quoteSheet(name: string): string {
+export function quoteSheet(name: string): string {
   return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(name) ? name : `'${name.replace(/'/g, "''")}'`;
 }
 
-function absolute(cell: string): string {
+export function absolute(cell: string): string {
   const m = /^\$?([A-Z]+)\$?(\d+)$/.exec(cell.toUpperCase());
   return m ? `$${m[1]}$${m[2]}` : cell;
 }

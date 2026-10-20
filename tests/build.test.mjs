@@ -294,3 +294,68 @@ test('agentBridge validation names conflicts with built-ins, modules and handler
   buildWorkbook({ ...MINIMAL_SPEC, agentBridge: { hidden: true } }, { output: join(dir, 'h.xlsm') });
   assert.match(strFromU8(unzipSync(readFileSync(join(dir, 'h.xlsm')))['xl/workbook.xml']), /<sheet name="AgentLog" sheetId="2" r:id="rIdAfoAgent" state="hidden"\/>/);
 }));
+
+const { updateWorkbook } = await import('../dist/build/update.js');
+const { patchVbaProject, vbaModuleNames } = await import('../dist/build/vbaPatch.js');
+
+test('patchVbaProject adds modules and edits existing ones, keeping the rest', () => {
+  const bin = writeVbaProject([
+    { name: 'ThisWorkbook', type: 'document', document: 'workbook', code: 'Option Explicit\r\n\r\nPrivate Sub Workbook_Open()\r\n    x = 1\r\nEnd Sub\r\n' },
+    { name: 'Sheet1', type: 'document', document: 'sheet', code: '' },
+    { name: 'Module1', type: 'standard', code: 'Public Sub Run()\r\nEnd Sub\r\n' },
+  ]);
+  const out = patchVbaProject(bin, {
+    add: [{ name: 'Module2', type: 'standard', code: 'Public Sub Two()\r\nEnd Sub\r\n' }],
+    append: { thisworkbook: 'Option Explicit\r\nPublic Function Marker()\r\nEnd Function\r\n' },
+  });
+  const p = readVbaProject(out, true);
+  assert.equal(p.error, undefined);
+  assert.deepEqual(vbaModuleNames(out), ['ThisWorkbook', 'Sheet1', 'Module1', 'Module2']);
+  const tw = p.modules.find((m) => m.name === 'ThisWorkbook').source;
+  assert.match(tw, /Workbook_Open[\s\S]*Function Marker/);
+  assert.equal((tw.match(/Option Explicit/g) ?? []).length, 1);
+  assert.equal(p.modules.find((m) => m.name === 'Module1').procedures[0].name, 'Run');
+  assert.throws(() => patchVbaProject(bin, { add: [{ name: 'module1', type: 'standard', code: '' }] }), /already in the project/);
+  assert.throws(() => patchVbaProject(bin, { append: { Nope: 'x' } }), /not found: Nope/);
+});
+
+test('updateWorkbook adds a planning function and retrofits the bridge into an existing workbook', () => withDir((dir) => {
+  const input = join(dir, 'existing.xlsm');
+  buildWorkbook({ ...SPEC, documentModules: { ThisWorkbook: 'Option Explicit\r\n\r\nPrivate Sub Workbook_Open()\r\n    Module1.Run\r\nEnd Sub\r\n' } },
+    { output: input, template: (writeFileSync(join(dir, 'layout.xlsx'), baseWorkbook()), join(dir, 'layout.xlsx')) });
+  const output = join(dir, 'updated.xlsm');
+  const r = updateWorkbook({
+    planningFunctions: [{ key: 'PF_2', name: 'PLAN_FUNC_2', dataProviderKey: 'DS_1', aggregationLevel: 'ALVL_1', characteristics: ['CHAR_A'] }],
+    agentBridge: { commands: [{ name: 'RUN_IT', macro: 'Module1.Run' }] },
+    vbaModules: [{ name: 'Extra', code: 'Public Sub E()\r\nEnd Sub\r\n' }],
+  }, { input, output });
+  assert.deepEqual(r.issues, []);
+  assert.deepEqual(r.planningObjects, ['PF_1=PLAN_FUNC_1 (function on DS_1)', 'PF_2=PLAN_FUNC_2 (function on DS_1)']);
+  assert.deepEqual(r.sheets, ['Plan Sheet', 'AgentLog']);
+  for (const m of ['Module1', 'Extra', 'AfoAgentSheet', 'AfoAgent']) assert.ok(r.vbaModules.includes(m), m);
+
+  const d = readWorkbook(output, { macroSource: true });
+  const tw = d.macros.modules.find((m) => m.name === 'ThisWorkbook').source;
+  // The existing handler gets the bridge call as its first line; the missing one is appended.
+  assert.match(tw, /Sub Workbook_Open\(\)\r?\n    AfoAgent\.MarkActive\r?\n    Module1\.Run/);
+  assert.match(tw, /Sub Workbook_SheetCalculate\(ByVal Sh As Object\)\r?\n    If Sh\.Name = AfoAgent\.BRIDGE_SHEET/);
+  assert.deepEqual(d.macros.buttons.map((b) => b.procedure), ['Module1.Run']);
+  const help = strFromU8(unzipSync(readFileSync(output))['xl/worksheets/afoAgent.xml']);
+  assert.match(help, /PF_2/);
+  assert.match(help, /RUN_IT/);
+
+  // A second retrofit, a missing data source and a key in use are refused without writing.
+  assert.throws(() => updateWorkbook({ agentBridge: {} }, { input: output, output: join(dir, 'again.xlsm') }), /bridge is installed/);
+  assert.throws(() => updateWorkbook({ planningFunctions: [{ key: 'PF_1', name: 'X', dataProviderKey: 'DS_9', aggregationLevel: 'A', characteristics: ['C'] }] },
+    { input, output: join(dir, 'bad.xlsm') }), (e) => /already used/.test(e.message) && /DS_9 is not in the workbook/.test(e.message));
+}));
+
+test('updateWorkbook creates a VBA project for a workbook without macros', () => withDir((dir) => {
+  const input = join(dir, 'plain.xlsx');
+  buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined }, { output: input });
+  assert.throws(() => updateWorkbook({ agentBridge: {} }, { input, output: join(dir, 'x.xlsx') }), /\.xlsm/);
+  const r = updateWorkbook({ agentBridge: {} }, { input, output: join(dir, 'bridged.xlsm') });
+  assert.deepEqual(r.issues, []);
+  assert.deepEqual(r.vbaModules, ['ThisWorkbook', 'Sheet1', 'AfoDefinition', 'AfoAgentSheet', 'AfoAgent']);
+  assert.match(strFromU8(unzipSync(readFileSync(join(dir, 'bridged.xlsm')))['[Content_Types].xml']), /macroEnabled\.main/);
+}));

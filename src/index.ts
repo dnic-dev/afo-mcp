@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import { type BuildSpec, type MinimalLayout, buildWorkbook } from './build/build.js';
+import { type UpdateOperations, updateWorkbook } from './build/update.js';
 import { SECTIONS, type Section, readWorkbook } from './workbook/read.js';
 import { scanWorkbooks, whereUsed } from './workbook/scan.js';
 
@@ -20,6 +21,8 @@ The tools unzip .xlsx/.xlsm files and parse or write the AfO definition Analysis
 - afo_where_used: every place a query, planning function, variable or characteristic occurs across a folder.
 - afo_build_workbook: write a new AfO workbook from a spec (data sources, crosstabs, planning functions,
   macros) onto a layout template or a generated minimal layout.
+- afo_update_workbook: change an existing AfO workbook (add planning functions, retrofit the agent bridge,
+  add VBA modules), keeping everything else.
 
 Building: this server has no BW access. Take the facts a spec needs from the BW system first
 (bw-modeling-mcp): query variables and InfoProvider (bw_get_query), the characteristics of the
@@ -37,6 +40,65 @@ What a workbook stores and what it does not:
 - Structure members and some filter values appear as BW-internal IDs (e.g. 00O2TP…); resolving them
   needs the query definition from the BW system (bw-modeling-mcp: bw_get_query).
 - Sheet references use the visible sheet name; zero-based AfO coordinates are converted to A1.`;
+
+const PLANNING_FUNCTIONS_SCHEMA = {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  key: { type: 'string', description: 'Alias used by SAPExecutePlanningFunction, e.g. PF_1.' },
+                  name: { type: 'string', description: 'Technical name of the planning function.' },
+                  description: { type: 'string' },
+                  dataProviderKey: { type: 'string', description: 'Data source the function runs on.' },
+                  aggregationLevel: { type: 'string' },
+                  characteristics: { type: 'array', items: { type: 'string' }, description: 'All characteristics of the aggregation level.' },
+                  filter: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } }, description: 'Fixed filter values per characteristic, internal keys.' },
+                  variables: {
+                    type: 'array',
+                    items: { type: 'object', properties: { name: { type: 'string' }, value: { type: 'string' } }, required: ['name', 'value'] },
+                    description: 'Stored variable values, internal format.',
+                  },
+                  variableCells: {
+                    type: 'array',
+                    items: { type: 'object', properties: { name: { type: 'string' }, cell: { type: 'string' } }, required: ['name', 'cell'] },
+                    description: 'Variables read from a cell at execution time, e.g. Planning!$C$9. The cell holds the external format.',
+                  },
+                },
+                required: ['key', 'name', 'dataProviderKey', 'aggregationLevel', 'characteristics'],
+              },
+            } as const;
+
+const AGENT_BRIDGE_SCHEMA = {
+              type: 'object',
+              description: 'Adds a command cell for agents such as Claude in Excel, whose cell writes Analysis for Office does not register: a bridge sheet (default AgentLog) with command cell B1 (defined name AfoAgentCommand), result B3, status B4, help, AfO messages and a step log, plus VBA that runs SET Sheet!A1=value, TRANSFER, PLAN key, PVAR key NAME=value, VAR DS NAME=value, FILTER DS DIM=value, REFRESH, SAVE, RESET and workbook commands. New AfO messages are logged after every step and errors fail it. Reading needs no command: the sheet explains the AfO read formulas and keeps live lists of data sources and planning objects. Needs an .xlsm output.',
+              properties: {
+                sheet: { type: 'string', description: 'Name of the bridge sheet (default AgentLog).' },
+                hidden: { type: 'boolean', description: 'Hide the bridge sheet; agents find it through the defined names AfoAgentCommand, AfoAgentResult, AfoAgentStatus.' },
+                commands: {
+                  type: 'array',
+                  description: 'Workbook commands, each running a macro, e.g. the macro behind a button.',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string', description: 'Upper case command word, e.g. COPY_ACTUALS.' },
+                      macro: { type: 'string', description: 'Module.Procedure among vbaModules.' },
+                      description: { type: 'string' },
+                    },
+                    required: ['name', 'macro'],
+                  },
+                },
+              },
+            } as const;
+
+const VBA_MODULES_SCHEMA = {
+              type: 'array',
+              description: 'Standard modules. Source as code, or as file (absolute, or relative to spec_path).',
+              items: {
+                type: 'object',
+                properties: { name: { type: 'string' }, code: { type: 'string' }, file: { type: 'string' } },
+                required: ['name'],
+              },
+            } as const;
 
 const TOOLS = [
   {
@@ -172,68 +234,15 @@ const TOOLS = [
                 required: ['key', 'dataProviderKey', 'sheet', 'cell'],
               },
             },
-            planningFunctions: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  key: { type: 'string', description: 'Alias used by SAPExecutePlanningFunction, e.g. PF_1.' },
-                  name: { type: 'string', description: 'Technical name of the planning function.' },
-                  description: { type: 'string' },
-                  dataProviderKey: { type: 'string', description: 'Data source the function runs on.' },
-                  aggregationLevel: { type: 'string' },
-                  characteristics: { type: 'array', items: { type: 'string' }, description: 'All characteristics of the aggregation level.' },
-                  filter: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } }, description: 'Fixed filter values per characteristic, internal keys.' },
-                  variables: {
-                    type: 'array',
-                    items: { type: 'object', properties: { name: { type: 'string' }, value: { type: 'string' } }, required: ['name', 'value'] },
-                    description: 'Stored variable values, internal format.',
-                  },
-                  variableCells: {
-                    type: 'array',
-                    items: { type: 'object', properties: { name: { type: 'string' }, cell: { type: 'string' } }, required: ['name', 'cell'] },
-                    description: 'Variables read from a cell at execution time, e.g. Planning!$C$9. The cell holds the external format.',
-                  },
-                },
-                required: ['key', 'name', 'dataProviderKey', 'aggregationLevel', 'characteristics'],
-              },
-            },
+            planningFunctions: PLANNING_FUNCTIONS_SCHEMA,
             shapeMacros: { type: 'object', additionalProperties: { type: 'string' }, description: 'Shape name in the template → Module.Procedure run on click.' },
-            agentBridge: {
-              type: 'object',
-              description: 'Adds a command cell for agents such as Claude in Excel, whose cell writes Analysis for Office does not register: a bridge sheet (default AgentLog) with command cell B1 (defined name AfoAgentCommand), result B3, status B4, help, AfO messages and a step log, plus VBA that runs SET Sheet!A1=value, TRANSFER, PLAN key, PVAR key NAME=value, VAR DS NAME=value, FILTER DS DIM=value, REFRESH, SAVE, RESET and workbook commands. New AfO messages are logged after every step and errors fail it. Reading needs no command: the sheet explains the AfO read formulas and keeps live lists of data sources and planning objects. Needs an .xlsm output.',
-              properties: {
-                sheet: { type: 'string', description: 'Name of the bridge sheet (default AgentLog).' },
-                hidden: { type: 'boolean', description: 'Hide the bridge sheet; agents find it through the defined names AfoAgentCommand, AfoAgentResult, AfoAgentStatus.' },
-                commands: {
-                  type: 'array',
-                  description: 'Workbook commands, each running a macro, e.g. the macro behind a button.',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      name: { type: 'string', description: 'Upper case command word, e.g. COPY_ACTUALS.' },
-                      macro: { type: 'string', description: 'Module.Procedure among vbaModules.' },
-                      description: { type: 'string' },
-                    },
-                    required: ['name', 'macro'],
-                  },
-                },
-              },
-            },
+            agentBridge: AGENT_BRIDGE_SCHEMA,
             documentModules: {
               type: 'object',
               additionalProperties: { type: 'string' },
               description: 'Code of document modules by visible sheet name or ThisWorkbook: event handlers such as Worksheet_Change or Workbook_SheetChange.',
             },
-            vbaModules: {
-              type: 'array',
-              description: 'Standard modules. Source as code, or as file (absolute, or relative to spec_path).',
-              items: {
-                type: 'object',
-                properties: { name: { type: 'string' }, code: { type: 'string' }, file: { type: 'string' } },
-                required: ['name'],
-              },
-            },
+            vbaModules: VBA_MODULES_SCHEMA,
           },
           required: ['system', 'dataProviders', 'grids'],
         },
@@ -263,6 +272,24 @@ const TOOLS = [
         overwrite: { type: 'boolean', description: 'Replace an existing output file (default false).' },
       },
       required: ['output'],
+    },
+  },
+  {
+    name: 'afo_update_workbook',
+    description:
+      'Change an existing Analysis for Office workbook without Excel instead of rebuilding it: add planning functions to its AfO definition (bound to a data source already in the workbook), retrofit the agent bridge so Claude in Excel can operate it, add VBA modules. Layout, formulas, data sources, crosstabs and existing macros stay as they are; existing Workbook_Open/Workbook_SheetCalculate handlers get one call added. Writes a new file (output), never the input; the workbook must be closed in Excel. Everything is checked first and every problem reported at once. Signed VBA projects are refused.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: { type: 'string', description: 'Absolute path of the existing AfO workbook.' },
+        output: { type: 'string', description: 'Absolute path of the changed copy (.xlsm when macros are involved).' },
+        planningFunctions: PLANNING_FUNCTIONS_SCHEMA,
+        agentBridge: AGENT_BRIDGE_SCHEMA,
+        vbaModules: VBA_MODULES_SCHEMA,
+        base_dir: { type: 'string', description: 'Folder that relative VBA module files resolve against.' },
+        overwrite: { type: 'boolean', description: 'Replace an existing output file (default false).' },
+      },
+      required: ['input', 'output'],
     },
   },
 ] as const;
@@ -320,6 +347,20 @@ function runTool(name: string, args: Args): unknown {
         baseDir,
       });
     }
+    case 'afo_update_workbook':
+      return updateWorkbook(
+        {
+          planningFunctions: args.planningFunctions as UpdateOperations['planningFunctions'],
+          agentBridge: args.agentBridge as UpdateOperations['agentBridge'],
+          vbaModules: args.vbaModules as UpdateOperations['vbaModules'],
+        },
+        {
+          input: str(args, 'input'),
+          output: str(args, 'output'),
+          overwrite: args.overwrite === true,
+          baseDir: typeof args.base_dir === 'string' && args.base_dir.trim() ? args.base_dir.trim() : undefined,
+        },
+      );
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

@@ -98,15 +98,15 @@ export function compressVba(data: Uint8Array): Uint8Array {
   return Uint8Array.from(out);
 }
 
-function record(id: number, body: Uint8Array | number[]): Buffer {
+export function record(id: number, body: Uint8Array | number[]): Buffer {
   const head = Buffer.alloc(6);
   head.writeUInt16LE(id, 0);
   head.writeUInt32LE(body.length, 2);
   return Buffer.concat([head, Buffer.from(body)]);
 }
 
-const u16 = (v: number) => { const b = Buffer.alloc(2); b.writeUInt16LE(v); return b; };
-const u32 = (v: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(v); return b; };
+export const u16 = (v: number) => { const b = Buffer.alloc(2); b.writeUInt16LE(v); return b; };
+export const u32 = (v: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(v); return b; };
 const utf16 = (s: string) => Buffer.from(s, 'utf16le');
 
 function dirStream(projectName: string, modules: VbaModuleSource[]): Buffer {
@@ -125,25 +125,29 @@ function dirStream(projectName: string, modules: VbaModuleSource[]): Buffer {
     record(0x000f, u16(modules.length)), // MODULES count
     record(0x0013, u16(0xffff)), // PROJECTCOOKIE
   ];
-  for (const m of modules) {
-    parts.push(
-      record(0x0019, encodeCp1252(m.name)),
-      record(0x0047, utf16(m.name)),
-      record(0x001a, encodeCp1252(m.name)),
-      record(0x0032, utf16(m.name)),
-      record(0x001c, []), record(0x0048, []),
-      record(0x0031, u32(0)), // source starts at offset 0: no performance cache
-      record(0x001e, u32(0)),
-      record(0x002c, u16(0xffff)),
-      record(m.type === 'standard' ? 0x0021 : 0x0022, []),
-      record(0x002b, []),
-    );
-  }
+  for (const m of modules) parts.push(moduleRecords(m));
   parts.push(record(0x0010, []));
   return Buffer.concat(parts);
 }
 
-function moduleSource(m: VbaModuleSource): string {
+/** The dir-stream records of one module; its source starts at offset 0 (no performance cache). */
+export function moduleRecords(m: VbaModuleSource): Buffer {
+  return Buffer.concat([
+    record(0x0019, encodeCp1252(m.name)),
+    record(0x0047, utf16(m.name)),
+    record(0x001a, encodeCp1252(m.name)),
+    record(0x0032, utf16(m.name)),
+    record(0x001c, []), record(0x0048, []),
+    record(0x0031, u32(0)),
+    record(0x001e, u32(0)),
+    record(0x002c, u16(0xffff)),
+    record(m.type === 'standard' ? 0x0021 : 0x0022, []),
+    record(0x002b, []),
+  ]);
+}
+
+/** Module source with the Attribute header lines VBA expects. */
+export function moduleSource(m: VbaModuleSource): string {
   const lines = [`Attribute VB_Name = "${m.name}"`];
   if (m.type === 'document') {
     lines.push(
