@@ -270,6 +270,9 @@ test('agentBridge adds the bridge sheet, defined names, the AfoAgent module and 
   assert.match(agent, /Case "RUN_IT": RunOne = RunMacro\("Module1\.Run"\)/);
   assert.match(agent, /Private Const LOG_FIRST_ROW As Long = \d+/);
   assert.match(agent, /Case "PVAR": RunOne = DoPlanVar\(rest\)/);
+  assert.match(agent, /Case "API": RunOne = DoApi\(rest\)/);
+  assert.match(agent, /SAPLogon is not allowed/);
+  assert.match(sheet, /API SAPFunction arg1\|arg2/);
   assert.match(agent, /PutFormula "Q2", "=SAPListOf\(""DATASOURCES""\)"/);
   assert.match(sheet, /Ask the user before SAVE/);
   assert.match(sheet, /SAPListOfVariables/);

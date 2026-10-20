@@ -98,6 +98,10 @@ to cover what a planner can do in AfO with keyboard and mouse.
 
 ### B. Navigation and design through the bridge
 
+- [x] **`API SAPFunction arg1|arg2|...`:** any AfO API function through the bridge (SAPLogon
+      excluded). Covers navigation, design rules and `SAPExecuteCommand` until convenience commands
+      exist. *(Parameters of SAPMoveDimension and the design rule functions to be confirmed live.)*
+
 - [ ] **`MOVE`:** move a dimension to rows, columns or free characteristics (`SAPMoveDimension`).
 - [ ] **Hierarchies:** expand, collapse, drill level; find the `SAPExecuteCommand` commands.
 - [ ] **Filter on planning objects** (`SAPSetFilter` with a planning object alias); test.

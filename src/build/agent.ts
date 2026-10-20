@@ -46,6 +46,7 @@ export const BUILTIN_COMMANDS: Array<[string, string]> = [
   ['VAR DS_1 NAME=value', 'Set a variable of a data source, value in external format as typed in the prompt (01.2025, 01.2025 - 12.2025). Consecutive VAR steps are submitted together.'],
   ['FILTER DS_1 DIMENSION=value', 'Filter a characteristic, value as typed in the filter dialog. ";" separates commands, so one value or one interval (a - b) per FILTER step.'],
   ['REFRESH', 'Refresh all data sources (REFRESH DS_1: one data source). Set mandatory variables with VAR first, or the prompt dialog opens.'],
+  ['API SAPFunction arg1|arg2|...', 'Call any Analysis for Office API function with its arguments, separated by "|": navigation (SAPMoveDimension), design rules (SAPSetFormat, SAPInsertLine), commands (SAPExecuteCommand). The result is logged; 0 counts as failure. SAPLogon is not allowed.'],
   ['SAVE', 'Save plan data to the server.'],
   ['RESET', 'Discard unsaved plan data.'],
 ];
@@ -240,6 +241,7 @@ Private Function RunOne(ByVal stepText As String) As Boolean
     Case "PVAR": RunOne = DoPlanVar(rest)
     Case "VAR": RunOne = DoVar(rest)
     Case "FILTER": RunOne = DoFilter(rest)
+    Case "API": RunOne = DoApi(rest)
 ${custom}
     Case Else
         lastMessage = "unknown command " & verb
@@ -337,6 +339,67 @@ Private Function DoFilter(ByVal rest As String) As Boolean
     Dim eq As Long: eq = InStr(rest, "=")
     If sp = 0 Or eq < sp Then lastMessage = "form: FILTER DS_1 DIMENSION=value": Exit Function
     DoFilter = Check(Application.Run("SAPSetFilter", Trim$(Left$(rest, sp - 1)), Trim$(Mid$(rest, sp + 1, eq - sp - 1)), Trim$(Mid$(rest, eq + 1)), "INPUT_STRING"))
+End Function
+
+' Any AfO API function: API SAPFunction arg1|arg2|... (up to 10 arguments).
+Private Function DoApi(ByVal rest As String) As Boolean
+    Dim sp As Long: sp = InStr(rest, " ")
+    Dim fn As String, args() As String
+    If sp > 0 Then
+        fn = Trim$(Left$(rest, sp - 1)): args = Split(Trim$(Mid$(rest, sp + 1)), "|")
+    Else
+        fn = Trim$(rest): args = Split("", "|")
+    End If
+    If Not fn Like "SAP*" Or fn Like "*[!A-Za-z0-9_]*" Then lastMessage = "form: API SAPFunction arg1|arg2": Exit Function
+    If UCase$(fn) = "SAPLOGON" Then lastMessage = "SAPLogon is not allowed through the bridge": Exit Function
+    Dim n As Long: n = UBound(args) - LBound(args) + 1
+    If n > 10 Then lastMessage = "at most 10 arguments": Exit Function
+    Dim a(1 To 10) As Variant, i As Long
+    For i = 1 To n: a(i) = Trim$(args(LBound(args) + i - 1)): Next i
+    Dim result As Variant
+    Select Case n
+    Case 0: result = Application.Run(fn)
+    Case 1: result = Application.Run(fn, a(1))
+    Case 2: result = Application.Run(fn, a(1), a(2))
+    Case 3: result = Application.Run(fn, a(1), a(2), a(3))
+    Case 4: result = Application.Run(fn, a(1), a(2), a(3), a(4))
+    Case 5: result = Application.Run(fn, a(1), a(2), a(3), a(4), a(5))
+    Case 6: result = Application.Run(fn, a(1), a(2), a(3), a(4), a(5), a(6))
+    Case 7: result = Application.Run(fn, a(1), a(2), a(3), a(4), a(5), a(6), a(7))
+    Case 8: result = Application.Run(fn, a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8))
+    Case 9: result = Application.Run(fn, a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9))
+    Case Else: result = Application.Run(fn, a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9), a(10))
+    End Select
+    Dim shown As String: shown = Flatten(result)
+    If IsError(result) Or shown = "0" Then
+        lastMessage = Txt(Application.Run("SAPGetProperty", "LastError", "Text"))
+        If lastMessage = "" Then lastMessage = fn & " returned " & IIf(IsError(result), "an error", "0")
+        Exit Function
+    End If
+    lastMessage = fn & " = " & shown
+    DoApi = True
+End Function
+
+' A result as one line: arrays row by row, fields separated by " | ", rows by " / ".
+Private Function Flatten(ByVal v As Variant) As String
+    Dim i As Long, j As Long, s As String
+    If Not IsArray(v) Then Flatten = Txt(v): Exit Function
+    If ArrayRank(v) = 2 Then
+        For i = LBound(v, 1) To UBound(v, 1)
+            If i > LBound(v, 1) Then s = s & " / "
+            For j = LBound(v, 2) To UBound(v, 2)
+                If j > LBound(v, 2) Then s = s & " | "
+                s = s & Txt(v(i, j))
+            Next j
+        Next i
+    Else
+        For i = LBound(v) To UBound(v)
+            If i > LBound(v) Then s = s & " | "
+            s = s & Txt(v(i))
+        Next i
+    End If
+    If Len(s) > 2000 Then s = Left$(s, 2000) & " ..."
+    Flatten = s
 End Function
 
 Private Function AfoCommand(ByVal cmd As String) As Boolean
