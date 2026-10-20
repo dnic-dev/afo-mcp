@@ -149,6 +149,21 @@ on it built with afo-mcp, to prove the bridge generic case by case:
       rewrite). The workbook binds the slot, the behaviour lives in BW: most requests then need no
       workbook change.
 
+### D2. Workbooks stored in BW (in bw-modeling-mcp, using the afo-mcp parser as a library)
+
+AfO workbooks saved to BW live in table `RSAOOBJ` (whole file in one field); BW keeps a
+where-used list in `RSAOOBJXREF` (queries by element UID, resolved through `RSZELTDIR`; planning
+functions by name). The RFC module `RSAO_BICS_OPEN` returns the file with authorization check
+(`IV_IGNORELOCKS = 'X'` sets no lock). Verified: a workbook fetched this way is read completely by
+the afo-mcp parser. Tracked as issues in the bw-modelling-skills repository.
+
+- [ ] `bw_list_afo_workbooks`: workbooks with where-used (queries, planning functions).
+- [ ] `bw_get_afo_workbook`: fetch and describe; file locally (stdio) or as a short-lived download
+      link (BTP). Open: how bw-modeling-mcp reaches the RFC module over HTTP.
+- [ ] `bw_save_afo_workbook`: save a changed workbook back (`RSAO_BICS_SAVE`), confirmation
+      required, new name by default.
+- [ ] Publish the afo-mcp parser so bw-modeling-mcp can depend on it.
+
 ### E. Bridge as an Excel add-in
 
 - [ ] The same bridge as an `.xlam` installed once per user, handling application-level events
