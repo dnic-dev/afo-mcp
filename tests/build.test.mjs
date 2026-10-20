@@ -10,10 +10,41 @@ import { readVbaProject, decompressVba } from '../dist/workbook/vba.js';
 import { readWorkbook } from '../dist/workbook/read.js';
 
 test('compressVba round-trips through the decompressor, across chunk sizes', () => {
-  for (const n of [0, 1, 3640, 3641, 4096, 5000, 12000]) {
+  for (const n of [0, 1, 3640, 3641, 4096, 4097, 5000, 12000]) {
     const input = Buffer.from(Array.from({ length: n }, (_, i) => 32 + (i % 90)));
     assert.deepEqual(Buffer.from(decompressVba(compressVba(input))), input, `length ${n}`);
   }
+  // Text without repetitions and random bytes exercise literal-heavy and raw chunks.
+  const random = Buffer.from(Array.from({ length: 9000 }, (_, i) => (i * 7919 + (i >> 3) * 104729) & 0xff));
+  assert.deepEqual(Buffer.from(decompressVba(compressVba(random))), random);
+});
+
+test('compressVba compresses source text with copy tokens and no raw chunks', () => {
+  const source = Buffer.from(Array.from({ length: 60 }, (_, i) => `    Application.Run "SAPSetVariable", "VAR_${i}", "X", "INPUT_STRING", "DS_1"\r\n`).join(''), 'latin1');
+  const packed = compressVba(source);
+  assert.ok(packed.length < source.length / 2, `expected real compression, got ${packed.length} of ${source.length}`);
+  // Every chunk header carries the compressed flag (bit 15).
+  let pos = 1;
+  while (pos < packed.length) {
+    const header = packed[pos] | (packed[pos + 1] << 8);
+    assert.ok(header & 0x8000, 'chunk must be compressed');
+    pos += (header & 0x0fff) + 3;
+  }
+  assert.deepEqual(Buffer.from(decompressVba(packed)), source);
+});
+
+test('compressVba matches the MS-OVBA specification example in size', () => {
+  // Byte equality is not required: among equally long matches the spec example picks a farther
+  // one, this compressor the nearest. Both decompress to the same text.
+  const input = Buffer.from('#aaabcdefaaaaghijaaaaaklaaamnopqaaaaaaaaaaaarstuvwxyzaaa', 'latin1');
+  const packed = compressVba(input);
+  assert.deepEqual(Buffer.from(decompressVba(packed)), input);
+  assert.equal(packed.length, [
+    0x01, 0x2f, 0xb0, 0x00, 0x23, 0x61, 0x61, 0x61, 0x62, 0x63, 0x64, 0x65, 0x82, 0x66, 0x00, 0x70,
+    0x61, 0x67, 0x68, 0x69, 0x6a, 0x01, 0x38, 0x08, 0x61, 0x6b, 0x6c, 0x00, 0x30, 0x6d, 0x6e, 0x6f,
+    0x70, 0x06, 0x71, 0x02, 0x70, 0x04, 0x10, 0x72, 0x73, 0x74, 0x75, 0x76, 0x10, 0x77, 0x78, 0x79,
+    0x7a, 0x00, 0x3c,
+  ].length);
 });
 
 test('encodeCp1252 keeps umlauts and maps typographic characters', () => {

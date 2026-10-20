@@ -41,6 +41,11 @@ export interface DataProviderSpec {
   inputReady?: boolean;
   /** Variable values stored with the data source; with them AfO opens without the prompt dialog. */
   prompts?: PromptValue[];
+  /**
+   * Stored axis layout. Characteristics by technical name; a key figure structure by its
+   * runtime UID (as the reporting metadata reports it). Omitted axes keep the query default.
+   */
+  axes?: { rows?: string[]; columns?: string[]; free?: string[] };
 }
 
 export interface GridSpec {
@@ -57,8 +62,10 @@ export interface PlanningFunctionSpec {
   description?: string;
   dataProviderKey: string;
   aggregationLevel: string;
-  /** Characteristics of the aggregation level, listed unrestricted in the ad-hoc filter. */
+  /** Characteristics of the aggregation level, listed in the ad-hoc filter. */
   characteristics: string[];
+  /** Fixed filter values per characteristic (internal keys); characteristics not listed stay unrestricted. */
+  filter?: Record<string, string[]>;
   /** Stored variable values, internal format. */
   variables?: Array<{ name: string; value: string }>;
   /** Variables read from a cell at execution time (`Sheet!$C$7`, value in external format). */
@@ -126,7 +133,11 @@ function planningFunction(pf: PlanningFunctionSpec, system: string, today: strin
   const filter = `<?xml version="1.0" encoding="UTF-8" standalone="no" ?><BICS_VIEW version="3.1"><SERVICE_DESCRIPTION><INITIALIZE_PARENT_CONTAINER>X</INITIALIZE_PARENT_CONTAINER><DATA_AREA>DEFAULT</DATA_AREA></SERVICE_DESCRIPTION>`
     + `<INFO_PROVIDER name="${esc(pf.aggregationLevel)}" /><SELECTION_OBJECT name="!!A${esc(pf.aggregationLevel)}"><DUE_DATE>${today}</DUE_DATE></SELECTION_OBJECT>`
     + `<SELECTION_SPACE_SORTING type="DEFAULT" /><SELECTION_STATE_SORTING type="DEFAULT" /><SELECTION_STATE><SELECTION type="CARTESIAN_PRODUCT"><CHARACTERISTICS>`
-    + pf.characteristics.map((c) => `<CHARACTERISTIC name="${esc(c)}"><SELECTIONS /></CHARACTERISTIC>`).join('')
+    + pf.characteristics.map((c) => {
+      const values = pf.filter?.[c] ?? [];
+      const sel = values.map((v) => `<SELECTION type="SINGLE_MEMBER"><MEMBER name="${esc(v)}" type="MEMBER" /></SELECTION>`).join('');
+      return `<CHARACTERISTIC name="${esc(c)}">${sel ? `<SELECTIONS>${sel}</SELECTIONS>` : '<SELECTIONS />'}</CHARACTERISTIC>`;
+    }).join('')
     + `</CHARACTERISTICS></SELECTION></SELECTION_STATE></BICS_VIEW>`;
   const refs = (pf.variableCells ?? [])
     .map((v) => `<VariableRefConfig><TechnicalName>${esc(v.name)}</TechnicalName><ReferenceType>Cell</ReferenceType><CellAdress>${esc(v.cell)}</CellAdress></VariableRefConfig>`)
@@ -147,6 +158,16 @@ function promptXml(p: PromptValue): string {
   return `<VARIABLE name="${esc(p.name)}" type="INFO_OBJECT_MEMBER" isStateVariable="false"><SELECTIONS>${sel}</SELECTIONS></VARIABLE>`;
 }
 
+/** The AXES block of a navigation state, in the form AfO writes it. */
+function axesXml(axes: DataProviderSpec['axes']): string {
+  if (!axes) return '';
+  const axis = (name: string, chars: string[] | undefined) => chars === undefined ? '' :
+    `<AXIS name="${name}"><HIERARCHY><ACTIVE>false</ACTIVE><DRILL_LEVEL>0</DRILL_LEVEL></HIERARCHY><SYMMETRIC_DRILL_MODE>false</SYMMETRIC_DRILL_MODE><RESULT_POSITION>BOTTOM</RESULT_POSITION>`
+    + `<ZERO_SUPPRESSION_MODE>NONE</ZERO_SUPPRESSION_MODE><ZERO_SUPPRESSION_ON_DATA_ENTRY_ENABLED_DATA_CELLS>true</ZERO_SUPPRESSION_ON_DATA_ENTRY_ENABLED_DATA_CELLS>`
+    + `<CHARACTERISTICS>${chars.map((c) => `<CHARACTERISTIC>${esc(c)}</CHARACTERISTIC>`).join('')}</CHARACTERISTICS><CUSTOM_PARAMETERS /></AXIS>`;
+  return `<AXES>${axis('ROWS', axes.rows)}${axis('COLUMNS', axes.columns)}${axis('FREE', axes.free)}</AXES>`;
+}
+
 /**
  * A minimal stored navigation state. DOCUMENT_APPLICATION_ASSIGNED tells AfO that no BW
  * document application is assigned; without any stored state AfO asks the server, and on a
@@ -158,6 +179,7 @@ function stateXml(dp: DataProviderSpec, day: string): string {
     + `<QUERY name="${esc(dp.query)}"><DUE_DATE>${day}</DUE_DATE></QUERY>`
     + (dp.prompts?.length ? `<VARIABLES>${dp.prompts.map(promptXml).join('')}</VARIABLES>` : '')
     + (dp.inputReady ?? true ? '<IS_INPUT_ENABLED>true</IS_INPUT_ENABLED>' : '')
+    + axesXml(dp.axes)
     + `<DOCUMENT_APPLICATION_ASSIGNED /></BICS_VIEW>`;
 }
 

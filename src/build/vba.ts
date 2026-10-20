@@ -38,30 +38,62 @@ export function encodeCp1252(s: string): Buffer {
   return out.subarray(0, n);
 }
 
+/** One chunk (at most 4096 bytes) with MS-OVBA 2.4.1.3 tokens: literals and copy tokens. */
+function compressChunk(chunk: Uint8Array): number[] {
+  const body: number[] = [];
+  let pos = 0;
+  while (pos < chunk.length) {
+    const flagIndex = body.length;
+    body.push(0);
+    let flags = 0;
+    for (let bit = 0; bit < 8 && pos < chunk.length; bit++) {
+      // The split between offset and length bits depends on how far the chunk has got.
+      let bitCount = 4;
+      while (1 << bitCount < pos) bitCount++;
+      const maxLength = (0xffff >> bitCount) + 3;
+      let bestLength = 0;
+      let bestOffset = 0;
+      for (let candidate = pos - 1; candidate >= 0; candidate--) {
+        let length = 0;
+        while (length < maxLength && pos + length < chunk.length && chunk[candidate + length] === chunk[pos + length]) length++;
+        if (length > bestLength) {
+          bestLength = length;
+          bestOffset = pos - candidate;
+          if (length === maxLength) break;
+        }
+      }
+      if (bestLength >= 3) {
+        const token = ((bestOffset - 1) << (16 - bitCount)) | (bestLength - 3);
+        body.push(token & 0xff, token >> 8);
+        flags |= 1 << bit;
+        pos += bestLength;
+      } else {
+        body.push(chunk[pos++]);
+      }
+    }
+    body[flagIndex] = flags;
+  }
+  return body;
+}
+
 /**
- * MS-OVBA compressed container without back-references: full 4096-byte chunks stored raw,
- * shorter chunks as literal tokens. Valid for every conforming decompressor.
+ * MS-OVBA compressed container (2.4.1.3), as Office writes it: every chunk compressed with
+ * copy tokens; a full chunk that would not shrink is stored raw. Excel refuses module streams
+ * that carry raw chunks where it expects compressed ones.
  */
 export function compressVba(data: Uint8Array): Uint8Array {
   const out: number[] = [0x01];
   for (let start = 0; start < data.length; start += 4096) {
     const chunk = data.subarray(start, start + 4096);
-    if (chunk.length === 4096) {
+    const body = compressChunk(chunk);
+    if (body.length > 4096 && chunk.length === 4096) {
       out.push(0xff, 0x3f);
       for (const b of chunk) out.push(b);
       continue;
     }
-    // A literal-only chunk holds at most 3640 bytes; split the remainder if needed.
-    for (let s = 0; s < chunk.length; s += 3640) {
-      const part = chunk.subarray(s, s + 3640);
-      const body: number[] = [];
-      for (let i = 0; i < part.length; i += 8) {
-        body.push(0x00);
-        for (let j = i; j < Math.min(i + 8, part.length); j++) body.push(part[j]);
-      }
-      const header = 0xb000 | (body.length + 2 - 3);
-      out.push(header & 0xff, header >> 8, ...body);
-    }
+    const header = 0xb000 | (body.length + 2 - 3);
+    out.push(header & 0xff, header >> 8);
+    for (const b of body) out.push(b);
   }
   return Uint8Array.from(out);
 }
