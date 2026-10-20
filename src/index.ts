@@ -199,6 +199,26 @@ const TOOLS = [
               },
             },
             shapeMacros: { type: 'object', additionalProperties: { type: 'string' }, description: 'Shape name in the template → Module.Procedure run on click.' },
+            agentBridge: {
+              type: 'object',
+              description: 'Adds a command cell for agents such as Claude in Excel, whose cell writes Analysis for Office does not register: a bridge sheet (default AgentLog) with command cell B1 (defined name AfoAgentCommand), result B3, status B4, help, AfO messages and a step log, plus VBA that runs SET Sheet!A1=value, TRANSFER, PLAN key, VAR DS NAME=value, FILTER DS DIM=value, REFRESH, SAVE, RESET and workbook commands. Needs an .xlsm output.',
+              properties: {
+                sheet: { type: 'string', description: 'Name of the bridge sheet (default AgentLog).' },
+                commands: {
+                  type: 'array',
+                  description: 'Workbook commands, each running a macro, e.g. the macro behind a button.',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string', description: 'Upper case command word, e.g. COPY_ACTUALS.' },
+                      macro: { type: 'string', description: 'Module.Procedure among vbaModules.' },
+                      description: { type: 'string' },
+                    },
+                    required: ['name', 'macro'],
+                  },
+                },
+              },
+            },
             documentModules: {
               type: 'object',
               additionalProperties: { type: 'string' },

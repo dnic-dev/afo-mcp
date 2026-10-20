@@ -7,6 +7,7 @@ import { dirname, extname, isAbsolute, resolve } from 'node:path';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readWorkbook } from '../workbook/read.js';
 import { type AfoWorkbookSpec, fromA1, makeAfoWorkbook } from './afo.js';
+import { agentSheetName, validateAgentBridge } from './agent.js';
 
 /** A value written into the generated minimal layout, optionally with a defined name. */
 export interface CellSpec {
@@ -158,6 +159,12 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
     else if (modules.length && !moduleNames.has(mod.toUpperCase())) errors.push(`shapeMacros.${shape}: module ${mod} is not among vbaModules.`);
   }
 
+  if (s.agentBridge) {
+    errors.push(...validateAgentBridge(s as AfoWorkbookSpec));
+    const e = sheetNameError(agentSheetName(s as AfoWorkbookSpec));
+    if (e) errors.push(`agentBridge.sheet: ${e}.`);
+    if ([...(layout?.sheets ?? []), ...grids.map((g) => g?.sheet)].some((n) => n?.toLowerCase() === agentSheetName(s as AfoWorkbookSpec).toLowerCase())) errors.push(`agentBridge.sheet ${agentSheetName(s as AfoWorkbookSpec)} is also a layout or crosstab sheet; the bridge sheet is generated.`);
+  }
   for (const sheet of layout?.sheets ?? []) {
     const e = sheetNameError(sheet);
     if (e) errors.push(`layout.sheets: ${e}.`);
@@ -266,7 +273,7 @@ export function buildWorkbook(spec: BuildSpec, options: BuildOptions): BuildResu
   if (options.template && options.layout) throw new Error('Give either template or layout, not both: layout describes the generated minimal workbook.');
 
   const errors = validateSpec(spec, options.layout);
-  const hasVba = !!spec.vbaModules?.length || Object.keys(spec.documentModules ?? {}).length > 0;
+  const hasVba = !!spec.vbaModules?.length || Object.keys(spec.documentModules ?? {}).length > 0 || !!spec.agentBridge;
   const warnings: string[] = [];
   let base: Uint8Array;
   let baseName: string;
@@ -283,6 +290,7 @@ export function buildWorkbook(spec: BuildSpec, options: BuildOptions): BuildResu
       const ref = splitCellRef(v.cell ?? '');
       if (ref && !t.sheets.includes(ref.sheet)) warnings.push(`${pf.key}: variable ${v.name} reads ${v.cell}, but the template has no sheet ${ref.sheet}.`);
     }
+    if (spec.agentBridge && t.sheets.some((n) => n.toLowerCase() === agentSheetName(spec as AfoWorkbookSpec).toLowerCase())) errors.push(`The template already has a sheet ${agentSheetName(spec as AfoWorkbookSpec)}; set agentBridge.sheet to another name.`);
     if (missing.length) errors.push(`Sheet(s) not in the template: ${missing.join(', ')}. Template sheets: ${t.sheets.join(', ')}.`);
     const clash = (spec.vbaModules ?? []).filter((m) => t.codeNames.some((c) => c.toLowerCase() === m.name?.toLowerCase()));
     if (clash.length) errors.push(`VBA module name(s) used as code name of a sheet or the workbook in the template: ${clash.map((m) => m.name).join(', ')}.`);

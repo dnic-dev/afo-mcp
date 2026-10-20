@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import { gzipSync, strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { AFO_NAMESPACE } from '../workbook/afo.js';
+import { AGENT_MODULE, AGENT_NAMES, type AgentBridgeSpec, agentModuleCode, agentSheetName, agentSheetXml, agentThisWorkbookCode } from './agent.js';
 import { writeVbaProject, type VbaModuleSource } from './vba.js';
 
 export interface AfoSystem {
@@ -92,6 +93,11 @@ export interface AfoWorkbookSpec {
    * Worksheet_Change or Workbook_SheetChange. Turns the workbook into .xlsm like vbaModules.
    */
   documentModules?: Record<string, string>;
+  /**
+   * Command cell for agents such as Claude in Excel, whose cell writes Analysis for Office does
+   * not see: a bridge sheet plus VBA that runs SET, PLAN, VAR, SAVE ... (see agent.ts).
+   */
+  agentBridge?: AgentBridgeSpec;
 }
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -252,7 +258,18 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
   const parts: Record<string, Uint8Array> = unzipSync(source);
   const text = (n: string) => strFromU8(parts[n]);
   let wb = text('xl/workbook.xml');
-  const wbRels = text('xl/_rels/workbook.xml.rels');
+  let wbRels = text('xl/_rels/workbook.xml.rels');
+
+  // Bridge sheet, added before the sheets are given their AfO ids so it gets one like any other.
+  const bridge = spec.agentBridge ? { name: agentSheetName(spec), ...agentSheetXml(spec) } : undefined;
+  if (bridge) {
+    const existing = [...wb.matchAll(/<sheet [^>]*name="([^"]+)"/g)].map((m) => m[1].replace(/&amp;/g, '&'));
+    if (existing.some((n) => n.toLowerCase() === bridge.name.toLowerCase())) throw new Error(`The workbook already has a sheet ${bridge.name}; choose another agentBridge.sheet.`);
+    const ids = [...wb.matchAll(/<sheet [^>]*sheetId="(\d+)"/g)].map((m) => Number(m[1])).filter((n) => n < 900);
+    parts['xl/worksheets/afoAgent.xml'] = strToU8(bridge.xml);
+    wb = wb.replace('</sheets>', () => `<sheet name="${esc(bridge.name)}" sheetId="${Math.max(0, ...ids) + 1}" r:id="rIdAfoAgent"/></sheets>`);
+    wbRels = wbRels.replace('</Relationships>', () => relXml('rIdAfoAgent', REL_WS, 'worksheets/afoAgent.xml') + '</Relationships>');
+  }
   const relTarget = new Map([...wbRels.matchAll(/<Relationship [^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map((m) => [m[1], m[2]]));
 
   // Code names: the workbook and every sheet need one for AfO ids and VBA document modules.
@@ -306,7 +323,11 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
   let rels = wbRels.replace('</Relationships>', relXml('rIdAfoSheet', REL_WS, 'worksheets/sheet900.xml') + '</Relationships>');
 
   // Defined names SAP<Key> for every item.
-  const names = spec.grids.map((g) => `<definedName name="SAP${esc(g.key)}">${esc(quoteSheet(g.sheet))}!${absolute(g.cell)}</definedName>`).join('');
+  let names = spec.grids.map((g) => `<definedName name="SAP${esc(g.key)}">${esc(quoteSheet(g.sheet))}!${absolute(g.cell)}</definedName>`).join('');
+  if (bridge) {
+    const ref = (cell: string) => `${esc(quoteSheet(bridge.name))}!${cell}`;
+    names += `<definedName name="${AGENT_NAMES.command}">${ref('$B$1')}</definedName><definedName name="${AGENT_NAMES.result}">${ref('$B$3')}</definedName><definedName name="${AGENT_NAMES.status}">${ref('$B$4')}</definedName>`;
+  }
   // Replacer functions throughout: names like $B$16 would otherwise be read as $1 back-references.
   if (names) wb = /<definedNames>/.test(wb) ? wb.replace('<definedNames>', () => `<definedNames>${names}`) : wb.replace('</sheets>', () => `</sheets><definedNames>${names}</definedNames>`);
 
@@ -317,21 +338,26 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
     .filter((n) => /^xl\/customProperty9\d\d\.bin$/.test(n))
     .map((n) => `<Override PartName="/${n}" ContentType="${CT_CP}"/>`)
     .join('');
-  ct = ct.replace('</Types>', `${cpOverrides}<Override PartName="/xl/worksheets/sheet900.xml" ContentType="${CT_WS}"/></Types>`);
+  ct = ct.replace('</Types>', `${cpOverrides}<Override PartName="/xl/worksheets/sheet900.xml" ContentType="${CT_WS}"/>`
+    + (bridge ? `<Override PartName="/xl/worksheets/afoAgent.xml" ContentType="${CT_WS}"/>` : '') + '</Types>');
 
   // VBA project: document modules for the workbook and each sheet, plus the standard modules.
   const docCode = new Map<string, string>();
-  for (const [target, code] of Object.entries(spec.documentModules ?? {})) {
+  const documentModules = { ...spec.documentModules };
+  if (bridge) documentModules.ThisWorkbook = agentThisWorkbookCode(documentModules.ThisWorkbook);
+  for (const [target, code] of Object.entries(documentModules)) {
     const codeName = target === 'ThisWorkbook' ? workbookCodeName : codeNameBySheet.get(target);
     if (!codeName) throw new Error(`Sheet not found for document module code: ${target}`);
     docCode.set(codeName, code);
   }
-  if (spec.vbaModules?.length || docCode.size) {
+  const standardModules = [...(spec.vbaModules ?? [])];
+  if (bridge) standardModules.push({ name: AGENT_MODULE, code: agentModuleCode(spec, bridge.logFirstRow) });
+  if (standardModules.length || docCode.size) {
     const modules: VbaModuleSource[] = [
       { name: workbookCodeName, type: 'document', document: 'workbook', code: docCode.get(workbookCodeName) ?? '' },
       ...sheetCodeNames.map((n): VbaModuleSource => ({ name: n, type: 'document', document: 'sheet', code: docCode.get(n) ?? '' })),
       { name: 'AfoDefinition', type: 'document', document: 'sheet', code: '' },
-      ...(spec.vbaModules ?? []).map((m): VbaModuleSource => ({ name: m.name, type: 'standard', code: m.code })),
+      ...standardModules.map((m): VbaModuleSource => ({ name: m.name, type: 'standard', code: m.code })),
     ];
     parts['xl/vbaProject.bin'] = writeVbaProject(modules);
     if (!/vbaProject\.bin/.test(rels)) rels = rels.replace('</Relationships>', relXml('rIdVba', REL_VBA, 'vbaProject.bin') + '</Relationships>');
