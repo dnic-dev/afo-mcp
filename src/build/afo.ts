@@ -237,8 +237,13 @@ function absolute(cell: string): string {
   return m ? `$${m[1]}$${m[2]}` : cell;
 }
 
+export interface MakeOptions {
+  /** Declare the workbook macro-enabled (.xlsm) even without VBA modules in the spec. */
+  macroEnabled?: boolean;
+}
+
 /** Make an existing .xlsx/.xlsm an AfO workbook according to the spec. */
-export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec): Uint8Array {
+export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, options: MakeOptions = {}): Uint8Array {
   const parts: Record<string, Uint8Array> = unzipSync(source);
   const text = (n: string) => strFromU8(parts[n]);
   let wb = text('xl/workbook.xml');
@@ -319,6 +324,8 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec): Uint
     if (!/vbaProject\.bin/.test(rels)) rels = rels.replace('</Relationships>', relXml('rIdVba', REL_VBA, 'vbaProject.bin') + '</Relationships>');
     ct = ct.replace(/(PartName="\/xl\/workbook\.xml" ContentType=")[^"]+"/, `$1${CT_MACRO_MAIN}"`);
     if (!/vbaProject\.bin/.test(ct)) ct = ct.replace('</Types>', `<Override PartName="/xl/vbaProject.bin" ContentType="${CT_VBA}"/></Types>`);
+  } else if (options.macroEnabled) {
+    ct = ct.replace(/(PartName="\/xl\/workbook\.xml" ContentType=")[^"]+"/, `$1${CT_MACRO_MAIN}"`);
   }
 
   // Click actions on shapes, by shape name.

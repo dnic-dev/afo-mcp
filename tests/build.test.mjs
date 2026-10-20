@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
@@ -151,4 +151,90 @@ test('makeAfoWorkbook writes a workbook the reader sees as a complete AfO workbo
 test('buildDefinition and makeAfoWorkbook reject unknown sheets and shapes', () => {
   assert.throws(() => buildDefinition({ ...SPEC, grids: [{ key: 'X', dataProviderKey: 'DS_1', sheet: 'Nope', cell: 'A1' }] }, new Map()), /Sheet not found: Nope/);
   assert.throws(() => makeAfoWorkbook(baseWorkbook(), { ...SPEC, shapeMacros: { missing: 'M.Run' } }), /Shape not found/);
+});
+
+const { buildWorkbook, validateSpec, splitCellRef } = await import('../dist/build/build.js');
+
+function withDir(fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'afo-build-'));
+  try { return fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+const MINIMAL_SPEC = { ...SPEC, shapeMacros: undefined };
+
+test('buildWorkbook writes a minimal layout with sheets, cells and defined names', () => withDir((dir) => {
+  const output = join(dir, 'minimal.xlsm');
+  const result = buildWorkbook(MINIMAL_SPEC, {
+    output,
+    layout: { sheets: ['Overview'], cells: [{ sheet: 'Plan Sheet', cell: 'C10', value: '01.2024', name: 'SourceMonth' }, { sheet: 'Plan Sheet', cell: 'B10', value: 'Source month' }, { sheet: 'Plan Sheet', cell: 'C11', value: 12 }] },
+  });
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.sheets, ['Overview', 'Plan Sheet']);
+  assert.deepEqual(result.dataSources, ['DS_1=QUERY_NAME']);
+  assert.deepEqual(result.crosstabs, ['Crosstab1 (DS_1) at Plan Sheet!B16']);
+  assert.deepEqual(result.vbaModules, ['Module1']);
+
+  const parts = unzipSync(readFileSync(output));
+  const sheet = strFromU8(parts['xl/worksheets/sheet2.xml']);
+  assert.match(sheet, /<row r="10"><c r="B10" s="1" t="inlineStr"><is><t xml:space="preserve">Source month<\/t><\/is><\/c><c r="C10" s="1" t="inlineStr"><is><t xml:space="preserve">01\.2024<\/t>/);
+  assert.match(sheet, /<c r="C11"><v>12<\/v><\/c>/);
+  const wb = strFromU8(parts['xl/workbook.xml']);
+  assert.match(wb, /<definedName name="SourceMonth">'Plan Sheet'!\$C\$10<\/definedName>/);
+  assert.match(wb, /<definedName name="SAPCrosstab1">'Plan Sheet'!\$B\$16<\/definedName>/);
+}));
+
+test('buildWorkbook marks an .xlsm without VBA as macro-enabled and an .xlsx as plain', () => withDir((dir) => {
+  const spec = { ...MINIMAL_SPEC, vbaModules: undefined };
+  buildWorkbook(spec, { output: join(dir, 'a.xlsm') });
+  buildWorkbook(spec, { output: join(dir, 'b.xlsx') });
+  const ct = (f) => strFromU8(unzipSync(readFileSync(join(dir, f)))['[Content_Types].xml']);
+  assert.match(ct('a.xlsm'), /sheet\.macroEnabled\.main\+xml/);
+  assert.doesNotMatch(ct('b.xlsx'), /macroEnabled/);
+  assert.throws(() => buildWorkbook(MINIMAL_SPEC, { output: join(dir, 'c.xlsx') }), /VBA modules need an \.xlsm output/);
+}));
+
+test('buildWorkbook uses a template and finds the button shapes in it', () => withDir((dir) => {
+  const template = join(dir, 'layout.xlsx');
+  writeFileSync(template, baseWorkbook());
+  const result = buildWorkbook(SPEC, { output: join(dir, 'built.xlsm'), template });
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(result.buttons, ['btnRun → Module1.Run']);
+  assert.equal(result.base, template);
+
+  // A template that is already an AfO workbook is refused, so is a missing sheet.
+  assert.throws(() => buildWorkbook(SPEC, { output: join(dir, 'again.xlsm'), template: join(dir, 'built.xlsm') }), /already an Analysis for Office workbook/);
+  assert.throws(() => buildWorkbook({ ...SPEC, grids: [{ key: 'Crosstab1', dataProviderKey: 'DS_1', sheet: 'Other', cell: 'A1' }] }, { output: join(dir, 'x.xlsm'), template }), /Sheet\(s\) not in the template: Other\. Template sheets: Plan Sheet\./);
+}));
+
+test('buildWorkbook refuses to overwrite unless asked and reads VBA from files', () => withDir((dir) => {
+  const output = join(dir, 'out.xlsm');
+  writeFileSync(join(dir, 'Module1.bas'), '﻿Public Sub Run()\r\n    Application.Run "SAPExecutePlanningFunction", "PF_1"\r\nEnd Sub\r\n');
+  const spec = { ...MINIMAL_SPEC, vbaModules: [{ name: 'Module1', file: 'Module1.bas' }] };
+  assert.throws(() => buildWorkbook(spec, { output }), /relative/);
+  buildWorkbook(spec, { output, baseDir: dir });
+  assert.throws(() => buildWorkbook(spec, { output, baseDir: dir }), /exists/);
+  const result = buildWorkbook(spec, { output, baseDir: dir, overwrite: true });
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(result.vbaModules, ['Module1']);
+}));
+
+test('validateSpec reports every problem at once', () => {
+  const errors = validateSpec({
+    system: { systemId: 'SYS', systemName: '', client: '001', language: 'EN' },
+    dataProviders: [{ key: 'DS_1', query: 'Q', prompts: [{ name: 'V1', member: 'A', literal: 'B' }] }, { key: 'ds_1', query: 'Q2' }],
+    grids: [{ key: 'Crosstab1', dataProviderKey: 'DS_9', sheet: 'S', cell: 'R1C1' }],
+    planningFunctions: [{ key: 'PF_1', name: 'F', dataProviderKey: 'DS_1', aggregationLevel: 'A', characteristics: ['C1'], filter: { C2: ['X'] }, variableCells: [{ name: 'V', cell: '$C$9' }] }],
+    shapeMacros: { btn: 'Missing.Run' },
+    vbaModules: [{ name: 'Sheet1', code: '' }, { name: 'Module1' }],
+  }, { cells: [{ sheet: 'S', cell: 'A1', value: 'x', name: 'B2' }] });
+  for (const re of [/system\.systemName/, /exactly one of member, literal or low/, /key ds_1 is already used/, /DS_9 is not a data source key/, /cell must be an A1 reference/, /filter on C2/, /must name sheet and cell/, /module Missing is not among vbaModules/, /Sheet1 is reserved/, /give either code or file/, /B2 is not usable as a defined name/]) {
+    assert.ok(errors.some((e) => re.test(e)), `missing ${re}: ${errors.join(' | ')}`);
+  }
+});
+
+test('splitCellRef handles quoted sheet names', () => {
+  assert.deepEqual(splitCellRef("'Plan ''A'''!$C$9"), { sheet: "Plan 'A'", cell: '$C$9' });
+  assert.deepEqual(splitCellRef('Planning!C9'), { sheet: 'Planning', cell: 'C9' });
+  assert.equal(splitCellRef('$C$9'), undefined);
 });

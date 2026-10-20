@@ -4,7 +4,7 @@ A Model Context Protocol (MCP) server for SAP Analysis for Office (AfO) workbook
 
 - **Read** workbooks without Excel and without an SAP logon: data sources and their saved state, planning objects, crosstabs, SAP formulas, VBA macros, for one workbook or a whole folder. *(available)*
 - **Operate** workbooks through Excel and the AfO API on Windows: variables, filters, refresh, planning functions and sequences, saving plan data. *(planned)*
-- **Build** workbooks: data sources, layout, planning objects and macros. *(planned)*
+- **Build** workbooks without Excel: data sources with stored prompts and axes, crosstabs, planning functions, VBA modules and button macros, on a layout template or a generated minimal layout. *(available)*
 
 ## Tools
 
@@ -13,6 +13,7 @@ A Model Context Protocol (MCP) server for SAP Analysis for Office (AfO) workbook
 | `afo_read_workbook` | Everything about one workbook: settings, sheets, data sources with filters, axes and hierarchies, planning functions and sequences with binding, aggregation level, filter, variable values and references, crosstabs and formula items with sheet and range, SAP cell formulas with parsed arguments, VBA modules with procedures and AfO API calls, buttons and the macros they run. Broken links are listed as issues. |
 | `afo_scan_workbooks` | Inventory of a folder: a profile per workbook, which query, planning function and variable is used in which workbooks, recurring layouts, and outliers (system, AfO version, unreadable files). |
 | `afo_where_used` | Every place a technical name occurs across a folder: data source, alias, planning object, aggregation level, filter, variable, characteristic, SAP formulas and VBA code. |
+| `afo_build_workbook` | Write a new AfO workbook from a JSON spec onto a layout template (.xlsx/.xlsm with sheets, texts, formats and button shapes) or a generated minimal layout. Checks the spec first and reports every problem at once, then reads the result back and lists broken links. The facts a spec needs (variables, aggregation level characteristics, structure UIDs) come from the BW system, e.g. through bw-modeling-mcp. |
 
 ## How it reads a workbook
 
@@ -42,4 +43,4 @@ MCP client configuration (stdio):
 
 ## Status
 
-Reading is in place and tested against synthetic fixtures. Operating and building through Excel are next.
+Reading and building are in place and tested against synthetic fixtures; built workbooks were checked in Excel with Analysis for Office. Operating workbooks through Excel is next.
