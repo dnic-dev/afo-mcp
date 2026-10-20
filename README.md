@@ -43,4 +43,4 @@ MCP client configuration (stdio):
 
 ## Status
 
-Reading and building are in place and tested against synthetic fixtures; built workbooks were checked in Excel with Analysis for Office. Operating workbooks through Excel is next.
+Reading and building are in place and tested against synthetic fixtures; built workbooks were checked in Excel with Analysis for Office. Operating workbooks through Excel is next. The plan for agentic planning with Claude in Excel and the agent bridge is in [docs/ROADMAP.md](docs/ROADMAP.md).
