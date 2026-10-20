@@ -76,10 +76,13 @@ to cover what a planner can do in AfO with keyboard and mouse.
 
 ### A. Harden the bridge
 
-- [x] **Rejected input:** *(implemented; live test with a data slice pending)* after `SET`/`TRANSFER`/`PLAN`, read the AfO messages; an error or a
+- [x] **Rejected input:** *(implemented; live test with a data slice pending. Live: "not enabled"
+      from PlanDataTransfer/Reset/Save means nothing pending and counts as OK; text in a data cell
+      is ignored by AfO without any message, so agents must check values after recalculating)* after `SET`/`TRANSFER`/`PLAN`, read the AfO messages; an error or a
       rejected value (data slice, characteristic relationship, lock) makes the step fail. Today
       `SET` reports OK even when AfO discards the value afterwards.
-- [x] **`PVAR key NAME=value`:** *(implemented; live test pending)* variables of planning functions and sequences
+- [x] **`PVAR key NAME=value`:** *(implemented; variables read from cells are rejected by AfO and
+      set through their cell instead; test with free variables in the parcours)* variables of planning functions and sequences
       (`SAPSetPlanParameter`).
 - [ ] **Dialog guard:** no command may hang on a dialog (prompt dialog on refresh, message
       dialog, confirmations). Prompts: require `VAR` first or detect and report. Messages: through
@@ -98,6 +101,8 @@ to cover what a planner can do in AfO with keyboard and mouse.
 
 ### B. Navigation and design through the bridge
 
+- [x] Live: `API SAPMoveDimension DS|DIMENSION|ROWS` and `…|AFTER|OTHER_DIMENSION` work; inserted
+      planning function PF_3 runs; retrofitted bridge runs the workbook commands.
 - [x] **`API SAPFunction arg1|arg2|...`:** any AfO API function through the bridge (SAPLogon
       excluded). Covers navigation, design rules and `SAPExecuteCommand` until convenience commands
       exist. *(Parameters of SAPMoveDimension and the design rule functions to be confirmed live.)*

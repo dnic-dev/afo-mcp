@@ -40,9 +40,9 @@ const LOG_KEEP = 500;
 /** Generic commands; workbook commands must not reuse these words. */
 export const BUILTIN_COMMANDS: Array<[string, string]> = [
   ['SET Sheet!A1=value', 'Write a value as user input (Analysis for Office registers it). Decimal point, no thousands separator. Empty value clears the cell. A range writes the same value into every cell. Values are checked when they are transferred: follow with TRANSFER or a planning function.'],
-  ['TRANSFER', 'Send changed input values to the server and check them, without running a planning function.'],
+  ['TRANSFER', 'Send changed input values to the server and check them, without running a planning function. "nothing pending" when there is nothing to send.'],
   ['PLAN key', 'Run a planning function or sequence by its key (PF_1, PS_1, ...).'],
-  ['PVAR key NAME=value', 'Set a variable of a planning function or sequence, value as typed in the prompt.'],
+  ['PVAR key NAME=value', 'Set a variable of a planning function or sequence, value as typed in the prompt. Variables the workbook reads from a cell are set by SET on that cell instead (AfO answers "Invalid parameter").'],
   ['VAR DS_1 NAME=value', 'Set a variable of a data source, value in external format as typed in the prompt (01.2025, 01.2025 - 12.2025). Consecutive VAR steps are submitted together.'],
   ['FILTER DS_1 DIMENSION=value', 'Filter a characteristic, value as typed in the filter dialog. ";" separates commands, so one value or one interval (a - b) per FILTER step.'],
   ['REFRESH', 'Refresh all data sources (REFRESH DS_1: one data source). Set mandatory variables with VAR first, or the prompt dialog opens.'],
@@ -57,6 +57,8 @@ const RULES = [
   'Selection ambiguous (a member under several parents, several matching rows)? Ask before writing.',
   'Write only input-ready cells of input-ready crosstabs. For changes to many cells prefer a planning function.',
   'After SET, run TRANSFER or a planning function and check B3: rejected values (data slices, characteristic relationships, locks) turn the step into ERROR.',
+  'Data cells take numbers only. Text in a data cell is ignored by Analysis for Office without a message: after recalculating, check that the values you wrote are still there.',
+  'Navigation (moving dimensions, drilling down) makes crosstabs grow; one growing into another is cut off (a WARNING in the log). Check the layout before navigating a crosstab placed above another.',
   'B3 still says "running" after 30 seconds: a dialog is probably open in Excel; ask the user to look.',
   'B4 is not "active": macros are disabled; ask the user to enable content and reopen.',
 ];
@@ -402,8 +404,13 @@ Private Function Flatten(ByVal v As Variant) As String
     Flatten = s
 End Function
 
+' AfO disables PlanDataTransfer, PlanDataReset and PlanDataSave while nothing is pending: not a failure.
 Private Function AfoCommand(ByVal cmd As String) As Boolean
     AfoCommand = Check(Application.Run("SAPExecuteCommand", cmd))
+    If Not AfoCommand And InStr(1, lastMessage, "not enabled", vbTextCompare) > 0 Then
+        lastMessage = "nothing pending (" & cmd & " not enabled)"
+        AfoCommand = True
+    End If
 End Function
 
 Private Function RunMacro(ByVal macro As String) As Boolean
