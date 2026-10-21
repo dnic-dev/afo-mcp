@@ -166,10 +166,10 @@ functions by name). The RFC module `RSAO_BICS_OPEN` returns the file with author
 (`IV_IGNORELOCKS = 'X'` sets no lock). Verified: a workbook fetched this way is read completely by
 the afo-mcp parser. Tracked as issues in the bw-modelling-skills repository.
 
-- [ ] `bw_list_afo_workbooks`: workbooks with where-used (queries, planning functions).
-- [ ] `bw_get_afo_workbook`: fetch and describe; file locally (stdio) or as a short-lived download
+- [x] `bw_list_afo_workbooks`: workbooks with where-used (queries, planning functions). *(in bw-modeling-mcp)*
+- [x] `bw_get_afo_workbook`: fetch and describe; file locally (stdio) or as a short-lived download
       link (BTP). Open: how bw-modeling-mcp reaches the RFC module over HTTP.
-- [ ] `bw_save_afo_workbook`: save a changed workbook back (`RSAO_BICS_SAVE`), confirmation
+- [x] `bw_save_afo_workbook`: save a changed workbook back (`RSAO_BICS_SAVE`), confirmation
       required, new name by default.
 - [ ] Publish the afo-mcp parser so bw-modeling-mcp can depend on it.
 
@@ -181,7 +181,9 @@ the afo-mcp parser. Tracked as issues in the bw-modelling-skills repository.
 
 ### F. Skills
 
-- [ ] Workbook skill (company design): `agentBridge` by default in planning workbooks.
+- [x] Workbook skill (company design): `agentBridge` by default in planning workbooks.
+- [x] Customer design skills build on the same builder (first: a customer project skill with its
+      own layout script, cards, calm buttons and SAP* cell styles; AfO keeps the styles on refresh).
 - [ ] Planning skill for Claude in Excel *(draft: `skills/afo-agentic-planning/SKILL.md`, to be
       reviewed and uploaded to the claude.ai account)*: how to understand a workbook (`SAPListOf`, bridge help),
       the rules from A, and how bw-modeling-mcp adds context. Check confidentiality before customer
