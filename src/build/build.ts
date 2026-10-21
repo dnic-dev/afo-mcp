@@ -26,8 +26,14 @@ export interface MinimalLayout {
 }
 
 /** The spec as the tool takes it: VBA modules may come from files. */
-export type BuildSpec = Omit<AfoWorkbookSpec, 'vbaModules'> & {
-  vbaModules?: Array<{ name: string; code?: string; file?: string }>;
+/** Text replacements applied to VBA taken over from a source workbook, e.g. a moved cell address. */
+export type VbaReplace = Array<[string, string]>;
+
+export type BuildSpec = Omit<AfoWorkbookSpec, 'vbaModules' | 'documentModules'> & {
+  /** Standard modules: code, a file, or a module of the source workbook (from) with optional replacements. */
+  vbaModules?: Array<{ name: string; code?: string; file?: string; from?: string; replace?: VbaReplace }>;
+  /** Code by sheet name or ThisWorkbook; or taken over from the source workbook's sheet module. */
+  documentModules?: Record<string, string | { from: string; replace?: VbaReplace }>;
 };
 
 export interface BuildOptions {
@@ -166,10 +172,10 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
     else if (RESERVED_MODULES.test(m.name)) errors.push(`${what}: ${m.name} is reserved for a document module.`);
     else if (moduleNames.has(m.name.toUpperCase())) errors.push(`${what}: module ${m.name} appears twice.`);
     else moduleNames.add(m.name.toUpperCase());
-    if ((m?.code === undefined) === (m?.file === undefined)) errors.push(`${what} (${m?.name}): give either code or file.`);
+    if ([m?.code, m?.file, m?.from].filter((x) => x !== undefined).length !== 1) errors.push(`${what} (${m?.name}): give one of code, file or from (from needs a source workbook).`);
   });
   for (const [target, code] of Object.entries(s.documentModules ?? {})) {
-    if (typeof code !== 'string') errors.push(`documentModules.${target}: code must be text.`);
+    if (typeof code !== 'string') errors.push(`documentModules.${target}: code must be text, or { from } with a source workbook.`);
   }
   for (const [shape, macro] of Object.entries(s.shapeMacros ?? {})) {
     const [mod, proc] = String(macro).split('.');
@@ -282,6 +288,37 @@ function inspectTemplate(bytes: Uint8Array): { sheets: string[]; codeNames: stri
   return { sheets, codeNames: wbCode ? [wbCode, ...codeNames] : codeNames, hasVba: !!parts['xl/vbaProject.bin'], afo: sheets.includes(HIDDEN_SHEET) };
 }
 
+function applyReplace(code: string, replace: VbaReplace | undefined): string {
+  return (replace ?? []).reduce((acc, [from, to]) => acc.split(from).join(to), code);
+}
+
+/** Fill VBA entries with `from` from the source workbook's VBA project. Returns the problems found. */
+function takeVbaFromSource(spec: BuildSpec, file: string): string[] {
+  const wanted = (spec.vbaModules ?? []).some((m) => m.from) || Object.values(spec.documentModules ?? {}).some((v) => typeof v === 'object');
+  if (!wanted) return [];
+  const errors: string[] = [];
+  const d = readWorkbook(file, { sections: ['sheets', 'macros'], macroSource: true });
+  const modules = d.macros?.modules ?? [];
+  const byName = (name: string) => modules.find((m) => m.name.toLowerCase() === name.toLowerCase());
+  for (const m of spec.vbaModules ?? []) {
+    if (!m.from) continue;
+    const src = byName(m.from);
+    if (!src || src.type !== 'standard') { errors.push(`vbaModules (${m.name}): the source has no standard module ${m.from}. Source modules: ${modules.filter((x) => x.type === 'standard').map((x) => x.name).join(', ') || 'none'}.`); continue; }
+    m.code = applyReplace(src.source ?? '', m.replace);
+    delete m.from;
+  }
+  const sheetCodeNames = new Set((d.sheets ?? []).map((x) => x.codeName?.toLowerCase()).filter(Boolean));
+  for (const [target, value] of Object.entries(spec.documentModules ?? {})) {
+    if (typeof value !== 'object') continue;
+    const module = value.from === 'ThisWorkbook'
+      ? modules.find((x) => x.type === 'document' && !sheetCodeNames.has(x.name.toLowerCase()))
+      : byName((d.sheets ?? []).find((x) => x.name === value.from)?.codeName ?? '\u0000');
+    if (!module) { errors.push(`documentModules.${target}: no module for ${value.from} in the source. Source sheets: ${(d.sheets ?? []).map((x) => x.name).join(', ')}.`); continue; }
+    spec.documentModules![target] = applyReplace(module.source ?? '', value.replace);
+  }
+  return errors;
+}
+
 /** Check the spec, write the workbook and read it back. Throws with every problem found. */
 export function buildWorkbook(input: BuildSpec, options: BuildOptions): BuildResult {
   // Entries taken over from a source workbook are completed from it; the caller's object stays as it is.
@@ -303,6 +340,7 @@ export function buildWorkbook(input: BuildSpec, options: BuildOptions): BuildRes
         const definition = readSourceDefinition(file);
         sourceErrors.push(...applySource(spec as AfoWorkbookSpec, definition).errors);
         spec.sourceDefinition = definition;
+        sourceErrors.push(...takeVbaFromSource(spec, file));
       } catch (err) {
         sourceErrors.push((err as Error).message);
       }
@@ -354,7 +392,7 @@ export function buildWorkbook(input: BuildSpec, options: BuildOptions): BuildRes
     if (!existsSync(file)) throw new Error(`VBA module file not found for ${m.name}: ${file}`);
     return { name: m.name, code: readFileSync(file, 'utf8').replace(/^﻿/, '') };
   });
-  const bytes = makeAfoWorkbook(base, { ...spec, vbaModules }, { macroEnabled: ext === '.xlsm' });
+  const bytes = makeAfoWorkbook(base, { ...spec, vbaModules, documentModules: spec.documentModules as Record<string, string> | undefined }, { macroEnabled: ext === '.xlsm' });
   writeFileSync(output, bytes);
 
   const d = readWorkbook(output, { sections: ['sheets', 'items', 'macros'] });

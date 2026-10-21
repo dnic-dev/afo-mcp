@@ -191,13 +191,13 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
     parts['xl/worksheets/afoAgent.xml'] = strToU8(xml.replace('</worksheet>', `<customProperties><customPr name="_pios_id" r:id="rIdAfo${a}"/><customPr name="CofWorksheetType" r:id="rIdAfo${b}"/></customProperties></worksheet>`));
     addRels(parts, 'xl/worksheets/_rels/afoAgent.xml.rels', relXml(`rIdAfo${a}`, REL_CP, `../customProperty${a}.bin`) + relXml(`rIdAfo${b}`, REL_CP, `../customProperty${b}.bin`));
     const ids = [...wb.matchAll(/<sheet [^>]*sheetId="(\d+)"/g)].map((m) => Number(m[1]));
-    wb = wb.replace('</sheets>', () => `<sheet name="${esc(name)}" sheetId="${Math.max(0, ...ids) + 1}" r:id="rIdAfoAgent"${ops.agentBridge!.hidden ? ' state="hidden"' : ''}/></sheets>`);
+    wb = wb.replace('</sheets>', () => `<sheet name="${esc(name)}" sheetId="${Math.max(0, ...ids) + 1}" r:id="rIdAfoAgent"${ops.agentBridge!.hidden ?? true ? ' state="hidden"' : ''}/></sheets>`);
     wbRels = wbRels.replace('</Relationships>', () => relXml('rIdAfoAgent', REL_WS, 'worksheets/afoAgent.xml') + '</Relationships>');
     ct = ct.replace('</Types>', () => `<Override PartName="/xl/worksheets/afoAgent.xml" ContentType="${CT_WS}"/><Override PartName="/xl/customProperty${a}.bin" ContentType="${CT_CP}"/><Override PartName="/xl/customProperty${b}.bin" ContentType="${CT_CP}"/></Types>`);
     const ref = (cell: string) => `${esc(quoteSheet(name))}!${cell}`;
     const names = `<definedName name="${AGENT_NAMES.command}">${ref('$B$1')}</definedName><definedName name="${AGENT_NAMES.result}">${ref('$B$3')}</definedName><definedName name="${AGENT_NAMES.status}">${ref('$B$4')}</definedName>`;
     wb = /<definedNames>/.test(wb) ? wb.replace('<definedNames>', () => `<definedNames>${names}`) : wb.replace('</sheets>', () => `</sheets><definedNames>${names}</definedNames>`);
-    changes.push(`agent bridge on sheet ${name}${ops.agentBridge.hidden ? ' (hidden)' : ''}${ops.agentBridge.commands?.length ? `, commands ${ops.agentBridge.commands.map((c) => c.name).join(', ')}` : ''}`);
+    changes.push(`agent bridge on sheet ${name}${ops.agentBridge.hidden ?? true ? ' (hidden)' : ''}${ops.agentBridge.commands?.length ? `, commands ${ops.agentBridge.commands.map((c) => c.name).join(', ')}` : ''}`);
   }
 
   // --- VBA.

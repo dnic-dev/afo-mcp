@@ -23,7 +23,7 @@ export interface AgentCommandSpec {
 export interface AgentBridgeSpec {
   /** Name of the bridge sheet (default AgentLog). */
   sheet?: string;
-  /** Hide the bridge sheet; agents find it through the defined names. */
+  /** Hide the bridge sheet (default true); agents find it through the defined names. false shows it. */
   hidden?: boolean;
   /** Workbook-specific commands, each running a macro (e.g. the macro behind a button). */
   commands?: AgentCommandSpec[];
@@ -42,7 +42,7 @@ export const BUILTIN_COMMANDS: Array<[string, string]> = [
   ['SET Sheet!A1=value', 'Write a value as user input (Analysis for Office registers it). Decimal point, no thousands separator. Empty value clears the cell. A range writes the same value into every cell. Values are checked when they are transferred: follow with TRANSFER or a planning function.'],
   ['TRANSFER', 'Send changed input values to the server and check them, without running a planning function. "nothing pending" when there is nothing to send.'],
   ['PLAN key', 'Run a planning function or sequence by its key (PF_1, PS_1, ...).'],
-  ['PVAR key NAME=value', 'Set a variable of a planning function or sequence, value as typed in the prompt. Variables the workbook reads from a cell are set by SET on that cell instead (AfO answers "Invalid parameter").'],
+  ['PVAR key NAME=value', 'Set a variable of a planning function or sequence, value as typed in the prompt. Variables the workbook reads from a cell are better set by SET on that cell: the next run reads the cell again.'],
   ['VAR DS_1 NAME=value', 'Set a variable of a data source, value in external format as typed in the prompt (01.2025, 01.2025 - 12.2025). Consecutive VAR steps are submitted together.'],
   ['FILTER DS_1 DIMENSION=value', 'Filter a characteristic, value as typed in the filter dialog. ";" separates commands, so one value or one interval (a - b) per FILTER step.'],
   ['REFRESH', 'Refresh all data sources (REFRESH DS_1: one data source). Set mandatory variables with VAR first, or the prompt dialog opens.'],
@@ -314,7 +314,8 @@ Private Function DoPlanVar(ByVal rest As String) As Boolean
     Dim sp As Long: sp = InStr(rest, " ")
     Dim eq As Long: eq = InStr(rest, "=")
     If sp = 0 Or eq < sp Then lastMessage = "form: PVAR PF_1 NAME=value": Exit Function
-    DoPlanVar = Check(Application.Run("SAPSetPlanParameter", Trim$(Left$(rest, sp - 1)), Trim$(Mid$(rest, sp + 1, eq - sp - 1)), Trim$(Mid$(rest, eq + 1))))
+    ' The fourth argument names the value format; without it AfO answers "Invalid parameter".
+    DoPlanVar = Check(Application.Run("SAPSetPlanParameter", Trim$(Left$(rest, sp - 1)), Trim$(Mid$(rest, sp + 1, eq - sp - 1)), Trim$(Mid$(rest, eq + 1)), "INPUT_STRING"))
 End Function
 
 Private Function DoVar(ByVal rest As String) As Boolean

@@ -228,7 +228,7 @@ test('validateSpec reports every problem at once', () => {
     shapeMacros: { btn: 'Missing.Run' },
     vbaModules: [{ name: 'Sheet1', code: '' }, { name: 'Module1' }],
   }, { cells: [{ sheet: 'S', cell: 'A1', value: 'x', name: 'B2' }] });
-  for (const re of [/system\.systemName/, /exactly one of member, literal or low/, /key ds_1 is already used/, /DS_9 is not a data source key/, /cell must be an A1 reference/, /filter on C2/, /must name sheet and cell/, /module Missing is not among vbaModules/, /Sheet1 is reserved/, /give either code or file/, /B2 is not usable as a defined name/]) {
+  for (const re of [/system\.systemName/, /exactly one of member, literal or low/, /key ds_1 is already used/, /DS_9 is not a data source key/, /cell must be an A1 reference/, /filter on C2/, /must name sheet and cell/, /module Missing is not among vbaModules/, /Sheet1 is reserved/, /give one of code, file or from/, /B2 is not usable as a defined name/]) {
     assert.ok(errors.some((e) => re.test(e)), `missing ${re}: ${errors.join(' | ')}`);
   }
 });
@@ -277,7 +277,7 @@ test('agentBridge adds the bridge sheet, defined names, the AfoAgent module and 
   assert.match(sheet, /Ask the user before SAVE/);
   assert.match(sheet, /SAPListOfVariables/);
   assert.match(sheet, /<c r="Q1" t="inlineStr"><is><t xml:space="preserve">Data sources \(live\)/);
-  assert.doesNotMatch(wb, /state="hidden"/);
+  assert.match(wb, /<sheet name="AgentLog" sheetId="2" r:id="rIdAfoAgent" state="hidden"\/>/);
   assert.ok(d.macros.modules.some((m) => m.name === 'AfoAgentSheet'));
 }));
 
@@ -294,8 +294,8 @@ test('agentBridge validation names conflicts with built-ins, modules and handler
     for (const re of [/SAVE is a built-in command/, /name must be upper case/, /module Missing is not among vbaModules/, /defines Workbook_Open/, /also a layout or crosstab sheet/]) assert.match(err.message, re);
   }
   assert.throws(() => buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, agentBridge: {} }, { output: join(dir, 'y.xlsx') }), /\.xlsm/);
-  buildWorkbook({ ...MINIMAL_SPEC, agentBridge: { hidden: true } }, { output: join(dir, 'h.xlsm') });
-  assert.match(strFromU8(unzipSync(readFileSync(join(dir, 'h.xlsm')))['xl/workbook.xml']), /<sheet name="AgentLog" sheetId="2" r:id="rIdAfoAgent" state="hidden"\/>/);
+  buildWorkbook({ ...MINIMAL_SPEC, agentBridge: { hidden: false } }, { output: join(dir, 'h.xlsm') });
+  assert.match(strFromU8(unzipSync(readFileSync(join(dir, 'h.xlsm')))['xl/workbook.xml']), /<sheet name="AgentLog" sheetId="2" r:id="rIdAfoAgent"\/>/);
 }));
 
 const { updateWorkbook } = await import('../dist/build/update.js');
@@ -423,4 +423,24 @@ test('cells write values and SAP formulas into template cells; styleSetName is w
   assert.match(sheet, /<c r="B9"[^>]*t="inlineStr"><is><t xml:space="preserve">Version<\/t>/);
   assert.match(readSourceDefinition(output), /<StyleSetName>Custom Set<\/StyleSetName>/);
   assert.throws(() => buildWorkbook({ ...MINIMAL_SPEC, cells: [{ sheet: 'Plan Sheet', cell: 'X', value: 1, formula: '=1' }] }, { output: join(dir, 'b.xlsm') }), /cell must be an A1 reference[\s\S]*either formula or value/);
+}));
+
+test('VBA modules and sheet module code are taken over from the source workbook, with replacements', () => withDir((dir) => {
+  const source = join(dir, 'source.xlsm');
+  buildWorkbook({ ...MINIMAL_SPEC, documentModules: { 'Plan Sheet': 'Private Sub Worksheet_SelectionChange(ByVal Target As Range)\r\n    If Target.Address = "$B$22" Then Module1.Run\r\nEnd Sub\r\n' } }, { output: source });
+  const output = join(dir, 'relayout.xlsm');
+  const r = buildWorkbook({
+    source,
+    dataProviders: [{ key: 'DS_1', from: 'DS_1' }],
+    planningFunctions: [{ key: 'PF_9', from: 'PF_1' }],
+    grids: [{ key: 'Crosstab1', from: 'Crosstab1', sheet: 'New', cell: 'B26' }],
+    vbaModules: [{ name: 'Module1', from: 'Module1', replace: [['"PF_1"', '"PF_9"']] }],
+    documentModules: { New: { from: 'Plan Sheet', replace: [['$B$22', '$C$22']] } },
+  }, { output, layout: { sheets: ['New'] } });
+  assert.deepEqual(r.issues, []);
+  const d = readWorkbook(output, { macroSource: true });
+  assert.match(d.macros.modules.find((m) => m.name === 'Module1').source, /SAPExecutePlanningFunction", "PF_9"/);
+  assert.match(d.macros.modules.find((m) => m.name === 'Sheet1').source, /Target\.Address = "\$C\$22"/);
+  assert.throws(() => buildWorkbook({ source, dataProviders: [{ key: 'DS_1', from: 'DS_1' }], grids: [], vbaModules: [{ name: 'X', from: 'Nope' }] },
+    { output: join(dir, 'bad.xlsm') }), /no standard module Nope/);
 }));
