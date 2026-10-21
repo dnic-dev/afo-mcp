@@ -149,6 +149,15 @@ on it built with afo-mcp, to prove the bridge generic case by case:
       rewrite). The workbook binds the slot, the behaviour lives in BW: most requests then need no
       workbook change.
 
+- [x] **Take over from a source workbook** (`source` + `from` on data sources, planning objects,
+      crosstabs, formula items): verbatim, with the whole stored state, design rules, connection
+      (SAProuter/SNC) and settings; keys may be renamed, positions are new. Round trip over 30 real
+      workbooks identical element by element; rebuilt workbooks recognised by AfO.
+- [x] Formula items (filter components) in the spec; the builder writes their formula into the cell.
+- [ ] Describe in the spec (for workbooks designed from scratch): filters incl. hierarchy nodes,
+      ranges and exclusions; design rules; display per characteristic; planning function filter
+      references; system connection with SAProuter/SNC.
+
 ### D2. Workbooks stored in BW (in bw-modeling-mcp, using the afo-mcp parser as a library)
 
 AfO workbooks saved to BW live in table `RSAOOBJ` (whole file in one field); BW keeps a

@@ -362,3 +362,51 @@ test('updateWorkbook creates a VBA project for a workbook without macros', () =>
   assert.deepEqual(r.vbaModules, ['ThisWorkbook', 'Sheet1', 'AfoDefinition', 'AfoAgentSheet', 'AfoAgent']);
   assert.match(strFromU8(unzipSync(readFileSync(join(dir, 'bridged.xlsm')))['[Content_Types].xml']), /macroEnabled\.main/);
 }));
+
+const { writeCells, fileFormula } = await import('../dist/build/cells.js');
+const { readSourceDefinition, keyedElement, firstElement } = await import('../dist/build/source.js');
+
+test('writeCells inserts cells in row and column order and keeps styles', () => {
+  const sheet = '<worksheet><sheetData><row r="2" spans="1:3"><c r="A2" s="4"><v>1</v></c><c r="C2"><v>3</v></c></row><row r="5"/></sheetData></worksheet>';
+  const out = writeCells(sheet, [
+    { ref: 'B2', formula: '=SAPGetVariable("DS_1", "V", "Value")' },
+    { ref: 'A2', value: 'x' },
+    { ref: 'D4', value: 7 },
+    { ref: 'A1', formula: 'SUM(B1:B2)' },
+  ]);
+  assert.equal(out, '<worksheet><sheetData><row r="1"><c r="A1"><f>SUM(B1:B2)</f></c></row><row r="2"><c r="A2" s="4" t="inlineStr"><is><t xml:space="preserve">x</t></is></c><c r="B2"><f>_xll.SAPGetVariable("DS_1", "V", "Value")</f></c><c r="C2"><v>3</v></c></row><row r="4"><c r="D4"><v>7</v></c></row><row r="5"/></sheetData></worksheet>');
+  assert.equal(fileFormula('=IF(A1,SAPGetData("DS_1"),_xll.SAPGetMember("DS_1"))'), 'IF(A1,_xll.SAPGetData("DS_1"),_xll.SAPGetMember("DS_1"))');
+});
+
+test('buildWorkbook takes data sources, planning objects, crosstabs and formula items over from a source workbook', () => withDir((dir) => {
+  const source = join(dir, 'source.xlsm');
+  buildWorkbook({ ...MINIMAL_SPEC, formulaItems: [{ key: 'Fdd1', sheet: 'Plan Sheet', cell: 'C5', formula: '=SAPSetFilterComponent("DS_1", "CHAR_A", "")' }] }, { output: source });
+  const output = join(dir, 'relayout.xlsm');
+  const r = buildWorkbook({
+    source,
+    dataProviders: [{ key: 'DS_A', from: 'DS_1' }],
+    planningFunctions: [{ key: 'PF_1', from: 'PF_1' }],
+    grids: [{ key: 'Crosstab1', from: 'Crosstab1', sheet: 'New Sheet', cell: 'D20' }],
+    formulaItems: [{ key: 'Fdd1', from: 'Fdd1', sheet: 'New Sheet', cell: 'B3' }],
+  }, { output, layout: { sheets: ['New Sheet'] } });
+  assert.deepEqual(r.issues, []);
+  assert.deepEqual(r.dataSources, ['DS_A=QUERY_NAME']);
+  assert.deepEqual(r.planningObjects, ['PF_1=PLAN_FUNC_1 (function on DS_A)']);
+  assert.deepEqual(r.crosstabs, ['Crosstab1 (DS_A) at New Sheet!D20']);
+
+  const a = readSourceDefinition(source), b = readSourceDefinition(output);
+  // The data source is taken over verbatim, only its key changes.
+  assert.equal(keyedElement(b, 'DataProvider', 'DS_A'), keyedElement(a, 'DataProvider', 'DS_1').replace('<Key>DS_1</Key>', '<Key>DS_A</Key>'));
+  // Connection and prompt settings come from the source; prompt entries follow the rename.
+  assert.equal(firstElement(b, 'PlanningSystemDesignTime'), firstElement(a, 'PlanningSystemDesignTime'));
+  assert.match(firstElement(b, 'PromptsVisibility'), /dataprovider="DS_A" name="VAR_VERSION"/);
+  assert.match(keyedElement(b, 'Fdd', 'Fdd1'), /<FormulaString>=SAPSetFilterComponent\("DS_A", "CHAR_A", ""\)<\/FormulaString>/);
+
+  const parts = unzipSync(readFileSync(output));
+  assert.match(strFromU8(parts['xl/worksheets/sheet1.xml']), /<c r="B3"><f>_xll\.SAPSetFilterComponent\("DS_A", "CHAR_A", ""\)<\/f><\/c>/);
+  assert.match(strFromU8(parts['xl/workbook.xml']), /<definedName name="SAPFdd1">'New Sheet'!\$B\$3<\/definedName>/);
+
+  // Unknown keys in the source are reported together, nothing is written.
+  assert.throws(() => buildWorkbook({ source, dataProviders: [{ key: 'X', from: 'DS_9' }], grids: [{ key: 'G', from: 'Nope', sheet: 'S', cell: 'A1' }] },
+    { output: join(dir, 'bad.xlsx') }), (e) => /no data source DS_9/.test(e.message) && /no crosstab Nope/.test(e.message));
+}));

@@ -47,6 +47,7 @@ const PLANNING_FUNCTIONS_SCHEMA = {
                 type: 'object',
                 properties: {
                   key: { type: 'string', description: 'Alias used by SAPExecutePlanningFunction, e.g. PF_1.' },
+                  from: { type: 'string', description: 'Take this planning function or sequence over from the source workbook (its key there), with variables, filter and references; the other fields are then optional.' },
                   name: { type: 'string', description: 'Technical name of the planning function.' },
                   description: { type: 'string' },
                   dataProviderKey: { type: 'string', description: 'Data source the function runs on.' },
@@ -64,7 +65,7 @@ const PLANNING_FUNCTIONS_SCHEMA = {
                     description: 'Variables read from a cell at execution time, e.g. Planning!$C$9. The cell holds the external format.',
                   },
                 },
-                required: ['key', 'name', 'dataProviderKey', 'aggregationLevel', 'characteristics'],
+                required: ['key'],
               },
             } as const;
 
@@ -165,9 +166,25 @@ const TOOLS = [
           type: 'object',
           description: 'The workbook spec. Alternatively spec_path.',
           properties: {
+            source: { type: 'string', description: 'Existing AfO workbook (absolute, or relative to spec_path) to take data sources, planning objects, crosstab and formula item settings, the system connection (incl. SAProuter/SNC) and the workbook settings from, for entries with from. Use it to give an existing workbook a new layout without losing any AfO feature. Settings the spec sets win.' },
+            formulaItems: {
+              type: 'array',
+              description: 'AfO formula items such as filter components. The builder writes the formula into the cell as well.',
+              items: {
+                type: 'object',
+                properties: {
+                  key: { type: 'string', description: 'e.g. Fdd1.' },
+                  from: { type: 'string', description: 'Take the item over from the source workbook; its formula follows renamed data sources.' },
+                  sheet: { type: 'string' },
+                  cell: { type: 'string', description: 'A1.' },
+                  formula: { type: 'string', description: 'e.g. =SAPSetFilterComponent("DS_1", "0CALMONTH", ""). Required unless from.' },
+                },
+                required: ['key', 'sheet', 'cell'],
+              },
+            },
             system: {
               type: 'object',
-              description: 'BW connection as in the SAP Logon landscape (%APPDATA%\\SAP\\Common\\SAPUILandscape.xml, Service entry with this systemid).',
+              description: 'BW connection as in the SAP Logon landscape (%APPDATA%\\SAP\\Common\\SAPUILandscape.xml, Service entry with this systemid). Not needed with a source workbook: its connection is used.',
               properties: {
                 systemId: { type: 'string', description: 'SID, e.g. ABC.' },
                 systemName: { type: 'string', description: 'The landscape entry name, e.g. "ABC - BW/4HANA".' },
@@ -189,6 +206,7 @@ const TOOLS = [
                 type: 'object',
                 properties: {
                   key: { type: 'string', description: 'Alias, e.g. DS_1.' },
+                  from: { type: 'string', description: 'Take this data source over from the source workbook (its key there) with its whole stored state: filters incl. hierarchy nodes, display settings, design rules, exceptions, conditions, prompts. query and the other fields are then not needed.' },
                   query: { type: 'string', description: 'Technical name of the query.' },
                   infoProvider: { type: 'string', description: 'The query\'s InfoProvider (for input-ready queries the aggregation level).' },
                   inputReady: { type: 'boolean', description: 'Default true.' },
@@ -217,7 +235,7 @@ const TOOLS = [
                     },
                   },
                 },
-                required: ['key', 'query'],
+                required: ['key'],
               },
             },
             grids: {
@@ -227,11 +245,12 @@ const TOOLS = [
                 type: 'object',
                 properties: {
                   key: { type: 'string', description: 'e.g. Crosstab1.' },
+                  from: { type: 'string', description: 'Take the crosstab settings over from this crosstab of the source workbook; only the position is new. dataProviderKey follows the taken-over data source.' },
                   dataProviderKey: { type: 'string' },
                   sheet: { type: 'string', description: 'Visible sheet name.' },
                   cell: { type: 'string', description: 'Top-left cell, A1.' },
                 },
-                required: ['key', 'dataProviderKey', 'sheet', 'cell'],
+                required: ['key', 'sheet', 'cell'],
               },
             },
             planningFunctions: PLANNING_FUNCTIONS_SCHEMA,
@@ -244,7 +263,7 @@ const TOOLS = [
             },
             vbaModules: VBA_MODULES_SCHEMA,
           },
-          required: ['system', 'dataProviders', 'grids'],
+          required: ['dataProviders', 'grids'],
         },
         spec_path: { type: 'string', description: 'Absolute path of a JSON file with the spec, instead of spec. Relative VBA module files resolve against its folder.' },
         template: { type: 'string', description: 'Absolute path of a plain layout workbook (not yet an AfO workbook). Every crosstab sheet must exist in it; button shapes are found by name.' },

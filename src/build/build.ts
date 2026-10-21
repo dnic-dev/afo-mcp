@@ -8,6 +8,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readWorkbook } from '../workbook/read.js';
 import { type AfoWorkbookSpec, fromA1, makeAfoWorkbook } from './afo.js';
 import { agentSheetName, validateAgentBridge } from './agent.js';
+import { applySource, readSourceDefinition } from './source.js';
 
 /** A value written into the generated minimal layout, optionally with a defined name. */
 export interface CellSpec {
@@ -84,8 +85,9 @@ function sheetNameError(name: string): string | undefined {
 export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] {
   const errors: string[] = [];
   const s = spec as Partial<BuildSpec>;
-  if (!s.system || typeof s.system !== 'object') errors.push('system is required (systemId, systemName, client, language).');
-  else for (const k of ['systemId', 'systemName', 'client', 'language'] as const) {
+  if (!s.source && (!s.system || typeof s.system !== 'object')) errors.push('system is required (systemId, systemName, client, language), unless a source workbook gives it.');
+  else if (s.system && typeof s.system !== 'object') errors.push('system must be an object.');
+  else if (s.system) for (const k of ['systemId', 'systemName', 'client', 'language'] as const) {
     if (typeof s.system[k] !== 'string' || !s.system[k].trim()) errors.push(`system.${k} is required.`);
   }
   const dps = Array.isArray(s.dataProviders) ? s.dataProviders : [];
@@ -106,7 +108,8 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
   dps.forEach((dp, i) => {
     const what = `dataProviders[${i}]`;
     claim(dp?.key, what);
-    if (typeof dp?.query !== 'string' || !dp.query.trim()) errors.push(`${what}: query is required.`);
+    if (dp?.from && !s.source) errors.push(`${what}: from needs a source workbook (source).`);
+    if (!dp?.from && (typeof dp?.query !== 'string' || !dp.query.trim())) errors.push(`${what}: query is required.`);
     (dp?.prompts ?? []).forEach((p, j) => {
       const kinds = [p.member !== undefined, p.literal !== undefined, p.low !== undefined].filter(Boolean).length;
       if (!p.name) errors.push(`${what}.prompts[${j}]: name is required.`);
@@ -125,13 +128,22 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
     if (typeof g?.sheet !== 'string' || !g.sheet) errors.push(`${what} (${g?.key}): sheet is required.`);
     if (typeof g?.cell !== 'string' || !isA1(g.cell)) errors.push(`${what} (${g?.key}): cell must be an A1 reference such as B16, got ${JSON.stringify(g?.cell)}.`);
   });
+  (s.formulaItems ?? []).forEach((f, i) => {
+    const what = `formulaItems[${i}]`;
+    claim(f?.key, what);
+    if (typeof f?.sheet !== 'string' || !f.sheet) errors.push(`${what} (${f?.key}): sheet is required.`);
+    if (typeof f?.cell !== 'string' || !isA1(f.cell)) errors.push(`${what} (${f?.key}): cell must be an A1 reference, got ${JSON.stringify(f?.cell)}.`);
+    if (f?.from && !s.source) errors.push(`${what}: from needs a source workbook (source).`);
+    if (!f?.from && (typeof f?.formula !== 'string' || !/^=\s*SAP\w+\s*\(/i.test(f.formula))) errors.push(`${what} (${f?.key}): formula must be an SAP formula such as =SAPSetFilterComponent("DS_1", "DIMENSION", "").`);
+  });
   pfs.forEach((pf, i) => {
     const what = `planningFunctions[${i}]`;
     claim(pf?.key, what);
-    if (!pf?.name) errors.push(`${what}: name (the planning function) is required.`);
+    if (pf?.from && !s.source) errors.push(`${what}: from needs a source workbook (source).`);
+    if (!pf?.from && !pf?.name) errors.push(`${what}: name (the planning function) is required.`);
     if (!dpKeys.has(pf?.dataProviderKey)) errors.push(`${what} (${pf?.key}): dataProviderKey ${pf?.dataProviderKey} is not a data source key.`);
-    if (!pf?.aggregationLevel) errors.push(`${what} (${pf?.key}): aggregationLevel is required.`);
-    if (!Array.isArray(pf?.characteristics) || !pf.characteristics.length) errors.push(`${what} (${pf?.key}): characteristics must list the characteristics of the aggregation level.`);
+    if (!pf?.from && !pf?.aggregationLevel) errors.push(`${what} (${pf?.key}): aggregationLevel is required.`);
+    if (!pf?.from && (!Array.isArray(pf?.characteristics) || !pf.characteristics.length)) errors.push(`${what} (${pf?.key}): characteristics must list the characteristics of the aggregation level.`);
     for (const c of Object.keys(pf?.filter ?? {})) {
       if (!pf.characteristics?.includes(c)) errors.push(`${what} (${pf.key}): filter on ${c}, which is not in characteristics.`);
     }
@@ -190,6 +202,7 @@ function layoutSheets(spec: BuildSpec, layout: MinimalLayout | undefined): strin
   const add = (n: string | undefined) => { if (n && !out.some((o) => o.toLowerCase() === n.toLowerCase())) out.push(n); };
   (layout?.sheets ?? []).forEach(add);
   (spec.grids ?? []).forEach((g) => add(g?.sheet));
+  (spec.formulaItems ?? []).forEach((f) => add(f?.sheet));
   (layout?.cells ?? []).forEach((c) => add(c?.sheet));
   (spec.planningFunctions ?? []).forEach((pf) => (pf.variableCells ?? []).forEach((v) => add(splitCellRef(v.cell)?.sheet)));
   if (!out.length) out.push('Sheet1');
@@ -264,7 +277,9 @@ function inspectTemplate(bytes: Uint8Array): { sheets: string[]; codeNames: stri
 }
 
 /** Check the spec, write the workbook and read it back. Throws with every problem found. */
-export function buildWorkbook(spec: BuildSpec, options: BuildOptions): BuildResult {
+export function buildWorkbook(input: BuildSpec, options: BuildOptions): BuildResult {
+  // Entries taken over from a source workbook are completed from it; the caller's object stays as it is.
+  const spec: BuildSpec = structuredClone(input);
   const output = resolve(options.output);
   const ext = extname(output).toLowerCase();
   if (ext !== '.xlsx' && ext !== '.xlsm') throw new Error(`output must end in .xlsx or .xlsm, got ${options.output}.`);
@@ -272,7 +287,22 @@ export function buildWorkbook(spec: BuildSpec, options: BuildOptions): BuildResu
   if (existsSync(output) && !options.overwrite) throw new Error(`The output file exists: ${output}. Pass overwrite: true to replace it.`);
   if (options.template && options.layout) throw new Error('Give either template or layout, not both: layout describes the generated minimal workbook.');
 
-  const errors = validateSpec(spec, options.layout);
+  const sourceErrors: string[] = [];
+  if (spec.source) {
+    const file = isAbsolute(spec.source) ? spec.source : resolve(options.baseDir ?? '', spec.source);
+    if (!isAbsolute(spec.source) && !options.baseDir) sourceErrors.push(`source is relative (${spec.source}); give an absolute path or pass the spec as a file.`);
+    else if (!existsSync(file)) sourceErrors.push(`The source workbook does not exist: ${file}`);
+    else {
+      try {
+        const definition = readSourceDefinition(file);
+        sourceErrors.push(...applySource(spec as AfoWorkbookSpec, definition).errors);
+        spec.sourceDefinition = definition;
+      } catch (err) {
+        sourceErrors.push((err as Error).message);
+      }
+    }
+  }
+  const errors = [...sourceErrors, ...validateSpec(spec, options.layout)];
   const hasVba = !!spec.vbaModules?.length || Object.keys(spec.documentModules ?? {}).length > 0 || !!spec.agentBridge;
   const warnings: string[] = [];
   let base: Uint8Array;
@@ -285,7 +315,7 @@ export function buildWorkbook(spec: BuildSpec, options: BuildOptions): BuildResu
     baseName = template;
     const t = inspectTemplate(base);
     if (t.afo) errors.push('The template is already an Analysis for Office workbook. Use a plain layout workbook; the builder writes the complete AfO definition.');
-    const missing = [...new Set(spec.grids?.map((g) => g.sheet) ?? [])].filter((s) => !t.sheets.includes(s));
+    const missing = [...new Set([...(spec.grids ?? []), ...(spec.formulaItems ?? [])].map((g) => g.sheet))].filter((s) => !t.sheets.includes(s));
     for (const pf of spec.planningFunctions ?? []) for (const v of pf.variableCells ?? []) {
       const ref = splitCellRef(v.cell ?? '');
       if (ref && !t.sheets.includes(ref.sheet)) warnings.push(`${pf.key}: variable ${v.name} reads ${v.cell}, but the template has no sheet ${ref.sheet}.`);

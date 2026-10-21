@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 import { gzipSync, strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { AFO_NAMESPACE } from '../workbook/afo.js';
 import { AGENT_MODULE, AGENT_NAMES, type AgentBridgeSpec, agentModuleCode, agentSheetName, agentSheetXml, agentThisWorkbookCode } from './agent.js';
+import { writeCells } from './cells.js';
+import { firstElement, keyedElement, replaceFirstKey, sourceSystemInfo } from './source.js';
 import { writeVbaProject, type VbaModuleSource } from './vba.js';
 
 export interface AfoSystem {
@@ -36,6 +38,12 @@ export interface PromptValue {
 
 export interface DataProviderSpec {
   key: string;
+  /**
+   * Take this data source over from the source workbook (its key there), with its whole stored
+   * state: filters, hierarchies, display settings, design rules, prompts. Other fields are ignored
+   * except key, which may rename it.
+   */
+  from?: string;
   query: string;
   /** The query's InfoProvider, written into the stored state. */
   infoProvider?: string;
@@ -51,14 +59,29 @@ export interface DataProviderSpec {
 
 export interface GridSpec {
   key: string;
+  /** Take the crosstab settings over from this crosstab of the source workbook; only the position is new. */
+  from?: string;
   dataProviderKey: string;
   sheet: string;
   /** Top-left cell, A1 notation. */
   cell: string;
 }
 
+/** An AfO formula item, e.g. a filter component (=SAPSetFilterComponent(...)) in a cell. */
+export interface FormulaItemSpec {
+  key: string;
+  /** Take the item over from the source workbook (its key there); its formula follows renamed data sources. */
+  from?: string;
+  sheet: string;
+  cell: string;
+  /** The formula, e.g. =SAPSetFilterComponent("DS_1", "0CALMONTH", ""). Required unless from. */
+  formula?: string;
+}
+
 export interface PlanningFunctionSpec {
   key: string;
+  /** Take this planning function or sequence over from the source workbook, with variables, filter and references. */
+  from?: string;
   name: string;
   description?: string;
   dataProviderKey: string;
@@ -74,7 +97,15 @@ export interface PlanningFunctionSpec {
 }
 
 export interface AfoWorkbookSpec {
-  system: AfoSystem;
+  /** Required unless a source workbook is given; then the source's connection (SAProuter, SNC) is used. */
+  system?: AfoSystem;
+  /**
+   * Workbook to take data sources, planning objects, crosstab settings, the system connection and
+   * the workbook settings from (entries with `from`). Settings the spec sets win.
+   */
+  source?: string;
+  /** The source workbook's AfO definition, loaded by the build step. */
+  sourceDefinition?: string;
   refreshOnOpen?: boolean;
   changeModeOnOpen?: boolean;
   storePrompts?: boolean;
@@ -83,6 +114,8 @@ export interface AfoWorkbookSpec {
   afoRevision?: string;
   dataProviders: DataProviderSpec[];
   grids: GridSpec[];
+  /** Formula items (filter components); the builder writes the formula into the cell too. */
+  formulaItems?: FormulaItemSpec[];
   planningFunctions?: PlanningFunctionSpec[];
   /** Macro per shape name, written as the shape's click action. */
   shapeMacros?: Record<string, string>;
@@ -196,31 +229,104 @@ function stateXml(dp: DataProviderSpec, day: string): string {
 
 /** The `<Application>` document. `sheetIds` maps sheet names to their AfO ids. */
 export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, string>, today = new Date()): string {
-  const sys = systemInfo(spec.system);
+  const src = spec.sourceDefinition;
+  const srcSystem = src ? sourceSystemInfo(src) : undefined;
+  if (!spec.system && !srcSystem) throw new Error('No system: give system, or a source workbook with a connection.');
+  const sys = spec.system ? systemInfo(spec.system) : srcSystem!;
+  const systemId = spec.system?.systemId ?? (src && /<SystemId>([^<]*)<\/SystemId>/.exec(src)?.[1]) ?? '';
   const day = today.toISOString().slice(0, 10).replace(/-/g, '');
   const sheetId = (name: string) => {
     const id = sheetIds.get(name);
     if (!id) throw new Error(`Sheet not found: ${name}`);
     return id;
   };
-  const dps = spec.dataProviders.map((dp) =>
-    `<DataProvider><Key>${esc(dp.key)}</Key><FillableNumber>1</FillableNumber><RefreshDataEntryEnabled>${tf(dp.inputReady ?? true)}</RefreshDataEntryEnabled><Cleaned>False</Cleaned>`
-    + `<DataSourceInfo><Id>${esc(dp.query)}</Id><Name>${esc(dp.query)}</Name><DisplayName>${esc(dp.query)}</DisplayName><Type>Query</Type><HasChildren>False</HasChildren><IsFormulaDriven>False</IsFormulaDriven><ShowScalingFactor>False</ShowScalingFactor><ShowUnits>False</ShowUnits>${sys}</DataSourceInfo>`
-    + `<DimensionSynchronization /><BICS_VIEW_HEADER compressed="true">${compressBlock(stateXml(dp, day))}</BICS_VIEW_HEADER><Comments /></DataProvider>`).join('');
-  const prompts = spec.dataProviders.flatMap((dp) => (dp.prompts ?? []).map((p) => `<Variable dataprovider="${esc(dp.key)}" name="${esc(p.name)}" visible="True" />`)).join('');
-  const pfs = (spec.planningFunctions ?? []).map((pf) => planningFunction(pf, sys, day)).join('');
+  const taken = (tag: string, key: string, what: string) => {
+    const xml = src && keyedElement(src, tag, key);
+    if (!xml) throw new Error(`The source has no ${what} ${key}.`);
+    return xml;
+  };
+  // Data source keys may be renamed: every reference in taken-over XML follows.
+  const renames = new Map(spec.dataProviders.filter((d) => d.from).map((d) => [d.from!, d.key]));
+  const renameRefs = (xml: string) => xml.replace(/<DataProviderKey>([^<]*)<\/DataProviderKey>/g, (m, k: string) => (renames.has(k) ? `<DataProviderKey>${esc(renames.get(k)!)}</DataProviderKey>` : m));
+
+  const dps = spec.dataProviders.map((dp) => dp.from
+    ? replaceFirstKey(taken('DataProvider', dp.from, 'data source'), dp.key, esc)
+    : `<DataProvider><Key>${esc(dp.key)}</Key><FillableNumber>1</FillableNumber><RefreshDataEntryEnabled>${tf(dp.inputReady ?? true)}</RefreshDataEntryEnabled><Cleaned>False</Cleaned>`
+      + `<DataSourceInfo><Id>${esc(dp.query)}</Id><Name>${esc(dp.query)}</Name><DisplayName>${esc(dp.query)}</DisplayName><Type>Query</Type><HasChildren>False</HasChildren><IsFormulaDriven>False</IsFormulaDriven><ShowScalingFactor>False</ShowScalingFactor><ShowUnits>False</ShowUnits>${sys}</DataSourceInfo>`
+      + `<DimensionSynchronization /><BICS_VIEW_HEADER compressed="true">${compressBlock(stateXml(dp, day))}</BICS_VIEW_HEADER><Comments /></DataProvider>`).join('');
+
+  // Prompt visibility: the source's entries for taken-over data sources, plus the new prompts.
+  const ownPrompts = spec.dataProviders.filter((dp) => !dp.from).flatMap((dp) => (dp.prompts ?? []).map((p) => `<Variable dataprovider="${esc(dp.key)}" name="${esc(p.name)}" visible="True" />`));
+  const srcPrompts = src
+    ? [...(firstElement(src, 'PromptsVisibility') ?? '').matchAll(/<Variable [^>]*\/>/g)]
+      .map((m) => m[0])
+      // Without a data source (merged variables) the entry applies to all; else it follows its data source.
+      .filter((v) => { const k = /dataprovider="([^"]*)"/.exec(v)?.[1]; return k === undefined || renames.has(k); })
+      .map((v) => v.replace(/dataprovider="([^"]*)"/, (_m, k: string) => `dataprovider="${esc(renames.get(k)!)}"`))
+    : [];
+  const prompts = [...srcPrompts, ...ownPrompts].join('');
+
+  const pfs = (spec.planningFunctions ?? []).map((pf) => pf.from
+    ? renameRefs(replaceFirstKey(taken('Planning\\w+Usage', pf.from, 'planning object'), pf.key, esc))
+      .replace(/<DataProviderKey>[^<]*<\/DataProviderKey>/, () => `<DataProviderKey>${esc(pf.dataProviderKey)}</DataProviderKey>`)
+    : planningFunction(pf, sys, day)).join('');
+
   const grids = spec.grids.map((g, i) => {
     const id = sheetId(g.sheet);
+    if (g.from) {
+      return replaceFirstKey(taken('Grid', g.from, 'crosstab'), g.key, esc)
+        .replace(/<ShapeId>[^<]*<\/ShapeId>/, () => `<ShapeId>${i + 2}</ShapeId>`)
+        .replace(/<DataProviderKey>[^<]*<\/DataProviderKey>/, () => `<DataProviderKey>${esc(g.dataProviderKey)}</DataProviderKey>`)
+        .replace(/<Range Name="([^"]+)">[\s\S]*?<\/Range>/g, (_m, name: string) => range(name, id, g.cell));
+    }
     return `<Grid><Key>${esc(g.key)}</Key><Description>${esc(g.key)}</Description><ShapeId>${i + 2}</ShapeId><DataProviderKey>${esc(g.dataProviderKey)}</DataProviderKey>`
       + range('RangeOccupied', id, g.cell) + range('RequestedRange', id, g.cell)
       + `<ApplyDefaultFormats>True</ApplyDefaultFormats><ApplyNumberFormats>True</ApplyNumberFormats><AutoFit>True</AutoFit><DisplayRepeatedTexts>False</DisplayRepeatedTexts><DisplayRepeatedTitles>False</DisplayRepeatedTitles>`
       + `<NumberOfNewLines>5</NumberOfNewLines><NewLinesCheckMode>NONE</NewLinesCheckMode><DisplayScalingUnitsInHeader>False</DisplayScalingUnitsInHeader><HierarchySymbolType>1</HierarchySymbolType><WrapHeaderTextWithLinebreak>True</WrapHeaderTextWithLinebreak></Grid>`;
   }).join('');
-  return `<Application xmlns="${AFO_NAMESPACE}"><com.sap.ip.bi.pioneer><Version>12</Version><AAO_Revision>${esc(spec.afoRevision ?? '2.8.2301.1605')}</AAO_Revision><SystemId>${esc(spec.system.systemId)}</SystemId>`
-    + `<RefreshOnOpen>${tf(spec.refreshOnOpen)}</RefreshOnOpen><PlanningModeSetToChangeMode>${tf(spec.changeModeOnOpen)}</PlanningModeSetToChangeMode><Cleaned>True</Cleaned>`
-    + `<ForcePromptOnInitialRefresh>False</ForcePromptOnInitialRefresh><StorePromptsInDocument>${tf(spec.storePrompts)}</StorePromptsInDocument><MergeVariables>${tf(spec.mergeVariables)}</MergeVariables><RefreshPlanningObjectsOnRefreshAll>True</RefreshPlanningObjectsOnRefreshAll>`
-    + (prompts ? `<PromptsVisibility>${prompts}</PromptsVisibility>` : '<PromptsVisibility />') + `<StyleSetName>SAP Blue</StyleSetName><PlanningSystemDesignTime>${sys}<CellLocking>None</CellLocking></PlanningSystemDesignTime><BExProperties />`
-    + `<DataProviders>${dps}</DataProviders>` + (pfs ? `<PlanningObjects>${pfs}</PlanningObjects>` : '') + `<Items>${grids}</Items></com.sap.ip.bi.pioneer></Application>`;
+
+  // Settings: the spec wins, then the source, then the builder default.
+  const setting = (name: string, value: boolean | undefined, fallback: boolean) =>
+    value !== undefined ? `<${name}>${tf(value)}</${name}>` : (src && firstElement(src, name)) ?? `<${name}>${tf(fallback)}</${name}>`;
+  const fromSource = (name: string, fallback: string) => (src && firstElement(src, name)) ?? fallback;
+  const ownDesign = `<PlanningSystemDesignTime>${sys}<CellLocking>None</CellLocking></PlanningSystemDesignTime>`;
+  const design = spec.system || !src ? ownDesign : fromSource('PlanningSystemDesignTime', ownDesign);
+  const revision = spec.afoRevision ?? (src && /<AAO_Revision>([^<]*)<\/AAO_Revision>/.exec(src)?.[1]) ?? '2.8.2301.1605';
+  return `<Application xmlns="${AFO_NAMESPACE}"><com.sap.ip.bi.pioneer><Version>12</Version><AAO_Revision>${esc(revision)}</AAO_Revision><SystemId>${esc(systemId)}</SystemId>`
+    + setting('RefreshOnOpen', spec.refreshOnOpen, false) + setting('PlanningModeSetToChangeMode', spec.changeModeOnOpen, false) + `<Cleaned>True</Cleaned>`
+    + fromSource('ForcePromptOnInitialRefresh', '<ForcePromptOnInitialRefresh>False</ForcePromptOnInitialRefresh>')
+    + setting('StorePromptsInDocument', spec.storePrompts, false) + setting('MergeVariables', spec.mergeVariables, false)
+    + fromSource('RefreshPlanningObjectsOnRefreshAll', '<RefreshPlanningObjectsOnRefreshAll>True</RefreshPlanningObjectsOnRefreshAll>')
+    + (prompts ? `<PromptsVisibility>${prompts}</PromptsVisibility>` : '<PromptsVisibility />')
+    + fromSource('StyleSetName', '<StyleSetName>SAP Blue</StyleSetName>') + design + fromSource('BExProperties', '<BExProperties />')
+    + `<DataProviders>${dps}</DataProviders>` + (pfs ? `<PlanningObjects>${pfs}</PlanningObjects>` : '') + `<Items>${grids}${formulaItemsXml(spec, sheetId, renames)}</Items></com.sap.ip.bi.pioneer></Application>`;
+}
+
+/** A formula item's formula with renamed data source aliases (first argument). */
+export function formulaItemFormula(item: FormulaItemSpec, spec: AfoWorkbookSpec, renames: Map<string, string>): string {
+  let formula = item.formula;
+  if (formula === undefined && item.from && spec.sourceDefinition) {
+    const raw = keyedElement(spec.sourceDefinition, 'Fdd', item.from);
+    formula = raw && /<FormulaString>([\s\S]*?)<\/FormulaString>/.exec(raw)?.[1]?.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  }
+  if (formula === undefined) throw new Error(`Formula item ${item.key}: no formula.`);
+  return formula.replace(/^(=\s*\w+\s*\(\s*")([^"]*)(")/, (m, a: string, alias: string, b: string) => (renames.has(alias) ? `${a}${renames.get(alias)}${b}` : m));
+}
+
+function formulaItemsXml(spec: AfoWorkbookSpec, sheetId: (name: string) => string, renames: Map<string, string>): string {
+  return (spec.formulaItems ?? []).map((item) => {
+    const id = sheetId(item.sheet);
+    // Element text: AfO writes quotes as they are; only &, < and > need escaping.
+    const formula = formulaItemFormula(item, spec, renames).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (item.from && spec.sourceDefinition) {
+      const raw = keyedElement(spec.sourceDefinition, 'Fdd', item.from);
+      if (!raw) throw new Error(`The source has no formula item ${item.from}.`);
+      return replaceFirstKey(raw, item.key, esc)
+        .replace(/<Range Name="([^"]+)">[\s\S]*?<\/Range>/g, (_m, name: string) => range(name, id, item.cell))
+        .replace(/<FormulaString>[\s\S]*?<\/FormulaString>/, () => `<FormulaString>${formula}</FormulaString>`);
+    }
+    return `<Fdd><Key>${esc(item.key)}</Key>${range('RequestedRange', id, item.cell)}<FormulaString>${formula}</FormulaString></Fdd>`;
+  }).join('');
 }
 
 export const REL_CP = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customProperty';
@@ -294,6 +400,10 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
       codeName = `Sheet${i + 1}`;
       xml = /<sheetPr/.test(xml) ? xml.replace('<sheetPr', `<sheetPr codeName="${codeName}"`) : xml.replace(/(<worksheet[^>]*>)/, `$1<sheetPr codeName="${codeName}"/>`);
     }
+    const sheetName = name.replace(/&amp;/g, '&');
+    const renames = new Map(spec.dataProviders.filter((d) => d.from).map((d) => [d.from!, d.key]));
+    const writes = (spec.formulaItems ?? []).filter((f) => f.sheet === sheetName).map((f) => ({ ref: f.cell, formula: formulaItemFormula(f, spec, renames) }));
+    if (writes.length) xml = writeCells(xml, writes);
     sheetCodeNames.push(codeName);
     codeNameBySheet.set(name.replace(/&amp;/g, '&'), codeName);
     const afoId = `${codeName}|${guid()}`;
@@ -323,7 +433,7 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
   let rels = wbRels.replace('</Relationships>', relXml('rIdAfoSheet', REL_WS, 'worksheets/sheet900.xml') + '</Relationships>');
 
   // Defined names SAP<Key> for every item.
-  let names = spec.grids.map((g) => `<definedName name="SAP${esc(g.key)}">${esc(quoteSheet(g.sheet))}!${absolute(g.cell)}</definedName>`).join('');
+  let names = [...spec.grids, ...(spec.formulaItems ?? [])].map((g) => `<definedName name="SAP${esc(g.key)}">${esc(quoteSheet(g.sheet))}!${absolute(g.cell)}</definedName>`).join('');
   if (bridge) {
     const ref = (cell: string) => `${esc(quoteSheet(bridge.name))}!${cell}`;
     names += `<definedName name="${AGENT_NAMES.command}">${ref('$B$1')}</definedName><definedName name="${AGENT_NAMES.result}">${ref('$B$3')}</definedName><definedName name="${AGENT_NAMES.status}">${ref('$B$4')}</definedName>`;
