@@ -410,3 +410,17 @@ test('buildWorkbook takes data sources, planning objects, crosstabs and formula 
   assert.throws(() => buildWorkbook({ source, dataProviders: [{ key: 'X', from: 'DS_9' }], grids: [{ key: 'G', from: 'Nope', sheet: 'S', cell: 'A1' }] },
     { output: join(dir, 'bad.xlsx') }), (e) => /no data source DS_9/.test(e.message) && /no crosstab Nope/.test(e.message));
 }));
+
+test('cells write values and SAP formulas into template cells; styleSetName is written', () => withDir((dir) => {
+  const output = join(dir, 'cells.xlsx');
+  buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, styleSetName: 'Custom Set', cells: [
+    { sheet: 'Plan Sheet', cell: 'C9', formula: '=SAPGetVariable("DS_1", "VAR_VERSION", "Value")' },
+    { sheet: 'Plan Sheet', cell: 'B9', value: 'Version' },
+  ] }, { output });
+  const parts = unzipSync(readFileSync(output));
+  const sheet = strFromU8(parts['xl/worksheets/sheet1.xml']);
+  assert.match(sheet, /<c r="C9"><f>_xll\.SAPGetVariable\("DS_1", "VAR_VERSION", "Value"\)<\/f><\/c>/);
+  assert.match(sheet, /<c r="B9"[^>]*t="inlineStr"><is><t xml:space="preserve">Version<\/t>/);
+  assert.match(readSourceDefinition(output), /<StyleSetName>Custom Set<\/StyleSetName>/);
+  assert.throws(() => buildWorkbook({ ...MINIMAL_SPEC, cells: [{ sheet: 'Plan Sheet', cell: 'X', value: 1, formula: '=1' }] }, { output: join(dir, 'b.xlsm') }), /cell must be an A1 reference[\s\S]*either formula or value/);
+}));

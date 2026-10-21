@@ -128,6 +128,12 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
     if (typeof g?.sheet !== 'string' || !g.sheet) errors.push(`${what} (${g?.key}): sheet is required.`);
     if (typeof g?.cell !== 'string' || !isA1(g.cell)) errors.push(`${what} (${g?.key}): cell must be an A1 reference such as B16, got ${JSON.stringify(g?.cell)}.`);
   });
+  (s.cells ?? []).forEach((c, i) => {
+    const what = `cells[${i}]`;
+    if (typeof c?.sheet !== 'string' || !c.sheet) errors.push(`${what}: sheet is required.`);
+    if (typeof c?.cell !== 'string' || !isA1(c.cell)) errors.push(`${what}: cell must be an A1 reference, got ${JSON.stringify(c?.cell)}.`);
+    if ((c?.formula === undefined) === (c?.value === undefined)) errors.push(`${what}: give either formula or value.`);
+  });
   (s.formulaItems ?? []).forEach((f, i) => {
     const what = `formulaItems[${i}]`;
     claim(f?.key, what);
@@ -315,7 +321,7 @@ export function buildWorkbook(input: BuildSpec, options: BuildOptions): BuildRes
     baseName = template;
     const t = inspectTemplate(base);
     if (t.afo) errors.push('The template is already an Analysis for Office workbook. Use a plain layout workbook; the builder writes the complete AfO definition.');
-    const missing = [...new Set([...(spec.grids ?? []), ...(spec.formulaItems ?? [])].map((g) => g.sheet))].filter((s) => !t.sheets.includes(s));
+    const missing = [...new Set([...(spec.grids ?? []), ...(spec.formulaItems ?? []), ...(spec.cells ?? [])].map((g) => g.sheet))].filter((s) => !t.sheets.includes(s));
     for (const pf of spec.planningFunctions ?? []) for (const v of pf.variableCells ?? []) {
       const ref = splitCellRef(v.cell ?? '');
       if (ref && !t.sheets.includes(ref.sheet)) warnings.push(`${pf.key}: variable ${v.name} reads ${v.cell}, but the template has no sheet ${ref.sheet}.`);

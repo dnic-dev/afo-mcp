@@ -167,6 +167,15 @@ const TOOLS = [
           description: 'The workbook spec. Alternatively spec_path.',
           properties: {
             source: { type: 'string', description: 'Existing AfO workbook (absolute, or relative to spec_path) to take data sources, planning objects, crosstab and formula item settings, the system connection (incl. SAProuter/SNC) and the workbook settings from, for entries with from. Use it to give an existing workbook a new layout without losing any AfO feature. Settings the spec sets win.' },
+            cells: {
+              type: 'array',
+              description: 'Values and formulas written into cells of the template or minimal layout, e.g. =SAPGetVariable("DS_1", "VAR", "Value") in a header. SAP formulas are stored as AfO stores them; the cell keeps its style.',
+              items: {
+                type: 'object',
+                properties: { sheet: { type: 'string' }, cell: { type: 'string', description: 'A1.' }, formula: { type: 'string' }, value: { type: ['string', 'number'] } },
+                required: ['sheet', 'cell'],
+              },
+            },
             formulaItems: {
               type: 'array',
               description: 'AfO formula items such as filter components. The builder writes the formula into the cell as well.',
@@ -200,6 +209,7 @@ const TOOLS = [
             changeModeOnOpen: { type: 'boolean', description: 'Planning: open input-ready data sources in change mode.' },
             storePrompts: { type: 'boolean', description: 'Store prompt values in the workbook (StorePromptsInDocument). Set true when prompts are given.' },
             mergeVariables: { type: 'boolean', description: 'Share variables of the same name across data sources and planning objects (AfO default false).' },
+            styleSetName: { type: 'string', description: "AfO style set the workbook names. Crosstabs are drawn with the workbook's SAP* cell styles; a template with its own SAP* styles can name its style set here (default: the source's, else SAP Blue)." },
             dataProviders: {
               type: 'array',
               items: {

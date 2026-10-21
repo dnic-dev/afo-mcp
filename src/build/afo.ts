@@ -111,9 +111,19 @@ export interface AfoWorkbookSpec {
   storePrompts?: boolean;
   /** Share variables of the same name between data sources and planning objects (AfO default: off). */
   mergeVariables?: boolean;
+  /**
+   * AfO style set the workbook names (e.g. "SAP Blue"). Crosstabs are drawn with the workbook's
+   * SAP* cell styles; a layout template can bring its own and name them here.
+   */
+  styleSetName?: string;
   afoRevision?: string;
   dataProviders: DataProviderSpec[];
   grids: GridSpec[];
+  /**
+   * Values and formulas to write into template cells, e.g. =SAPGetVariable(...) in a header.
+   * SAP formulas are stored the way AfO stores them (`_xll.`); the cell keeps its style.
+   */
+  cells?: Array<{ sheet: string; cell: string; formula?: string; value?: string | number }>;
   /** Formula items (filter components); the builder writes the formula into the cell too. */
   formulaItems?: FormulaItemSpec[];
   planningFunctions?: PlanningFunctionSpec[];
@@ -298,7 +308,7 @@ export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, str
     + setting('StorePromptsInDocument', spec.storePrompts, false) + setting('MergeVariables', spec.mergeVariables, false)
     + fromSource('RefreshPlanningObjectsOnRefreshAll', '<RefreshPlanningObjectsOnRefreshAll>True</RefreshPlanningObjectsOnRefreshAll>')
     + (prompts ? `<PromptsVisibility>${prompts}</PromptsVisibility>` : '<PromptsVisibility />')
-    + fromSource('StyleSetName', '<StyleSetName>SAP Blue</StyleSetName>') + design + fromSource('BExProperties', '<BExProperties />')
+    + (spec.styleSetName ? `<StyleSetName>${esc(spec.styleSetName)}</StyleSetName>` : fromSource('StyleSetName', '<StyleSetName>SAP Blue</StyleSetName>')) + design + fromSource('BExProperties', '<BExProperties />')
     + `<DataProviders>${dps}</DataProviders>` + (pfs ? `<PlanningObjects>${pfs}</PlanningObjects>` : '') + `<Items>${grids}${formulaItemsXml(spec, sheetId, renames)}</Items></com.sap.ip.bi.pioneer></Application>`;
 }
 
@@ -402,7 +412,10 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
     }
     const sheetName = name.replace(/&amp;/g, '&');
     const renames = new Map(spec.dataProviders.filter((d) => d.from).map((d) => [d.from!, d.key]));
-    const writes = (spec.formulaItems ?? []).filter((f) => f.sheet === sheetName).map((f) => ({ ref: f.cell, formula: formulaItemFormula(f, spec, renames) }));
+    const writes = [
+      ...(spec.cells ?? []).filter((c) => c.sheet === sheetName).map((c) => ({ ref: c.cell, formula: c.formula, value: c.value })),
+      ...(spec.formulaItems ?? []).filter((f) => f.sheet === sheetName).map((f) => ({ ref: f.cell, formula: formulaItemFormula(f, spec, renames) })),
+    ];
     if (writes.length) xml = writeCells(xml, writes);
     sheetCodeNames.push(codeName);
     codeNameBySheet.set(name.replace(/&amp;/g, '&'), codeName);
