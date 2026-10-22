@@ -141,7 +141,14 @@ on it built with afo-mcp, to prove the bridge generic case by case:
       Excel-compiled project; AfO recognises the result.
 - [x] Insert a planning function (bound to an existing data source). *(Run time test with logon
       pending.)*
-- [ ] Insert a planning sequence, a data source with crosstab, change prompts and axes.
+- [x] Store prompt values in an existing workbook (`prompts`, `storePrompts`): other variables keep
+      their values, "reset data source" is switched off for the data sources concerned (AfO keeps
+      no state for them otherwise), variables still without a value are reported. *(Open test in
+      AfO pending.)*
+- [x] An AfO workbook as build template (`template: "source"`, e.g. a workbook from BW): the
+      definition is replaced in place, sheet ids, cells and VBA stay; crosstabs taken over keep
+      the area they occupy. *(Open test in AfO pending.)*
+- [ ] Insert a planning sequence, a data source with crosstab, change axes.
 - [ ] AfO conditional formatting (exceptions), AfO charts, number of new lines, filter components
       (`SAPSetFilterComponent` items); learn each format from a workbook AfO saved itself.
 - [ ] **Planning toolkit:** a spec preset that binds a set of generic planning functions (revalue

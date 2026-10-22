@@ -8,7 +8,9 @@
 
 import { randomUUID } from 'node:crypto';
 import { gzipSync, strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
-import { AFO_NAMESPACE } from '../workbook/afo.js';
+import { AFO_NAMESPACE, toA1 } from '../workbook/afo.js';
+import { decodeCompressed } from '../workbook/bics.js';
+import { decodeText, relsPartOf, resolveTarget } from '../workbook/package.js';
 import { AGENT_MODULE, AGENT_NAMES, type AgentBridgeSpec, agentModuleCode, agentSheetName, agentSheetXml, agentThisWorkbookCode } from './agent.js';
 import { writeCells } from './cells.js';
 import { firstElement, keyedElement, replaceFirstKey, sourceSystemInfo } from './source.js';
@@ -180,6 +182,35 @@ function range(name: string, sheetId: string, cell: string): string {
   return `<Range Name="${name}"><SheetName>${esc(sheetId)}</SheetName>${c}</Range>`;
 }
 
+/**
+ * A taken-over item's ranges moved so the first one starts at `cell`, keeping their size: a
+ * crosstab keeps the area it occupies, so AfO sees its rendered cells in the layout as its own
+ * and not as foreign content it would cut off (ID-103030).
+ */
+export function moveRanges(itemXml: string, sheetId: string, cell: string): string {
+  const { row, col } = fromA1(cell);
+  const first = /<Range Name="[^"]+">[\s\S]*?<Cell Name="TopLeft">[\s\S]*?<Col>(\d+)<\/Col>[\s\S]*?<Row>(\d+)<\/Row>/.exec(itemXml);
+  if (!first) return itemXml.replace(/<Range Name="([^"]+)">[\s\S]*?<\/Range>/g, (_m, name: string) => range(name, sheetId, cell));
+  const dCol = col - Number(first[1]), dRow = row - Number(first[2]);
+  return itemXml.replace(/<Range Name="[^"]+">[\s\S]*?<\/Range>/g, (r) => r
+    .replace(/<SheetName>[^<]*<\/SheetName>/, () => `<SheetName>${esc(sheetId)}</SheetName>`)
+    .replace(/<Col>(\d+)<\/Col>/g, (_m, c: string) => `<Col>${Number(c) + dCol}</Col>`)
+    .replace(/<Row>(\d+)<\/Row>/g, (_m, n: string) => `<Row>${Number(n) + dRow}</Row>`));
+}
+
+/** The A1 area a crosstab occupies, from its RangeOccupied (else its first range). */
+export function occupiedArea(gridXml: string): string | undefined {
+  const r = /<Range Name="RangeOccupied">[\s\S]*?<\/Range>/.exec(gridXml)?.[0] ?? /<Range Name="[^"]+">[\s\S]*?<\/Range>/.exec(gridXml)?.[0];
+  const corner = (name: string) => {
+    const c = new RegExp(`<Cell Name="${name}">[\\s\\S]*?<Col>(\\d+)</Col>[\\s\\S]*?<Row>(\\d+)</Row>`).exec(r ?? '');
+    return c ? toA1(Number(c[2]), Number(c[1])) : undefined;
+  };
+  const tl = corner('TopLeft'), br = corner('BottomRight');
+  if (!tl) return undefined;
+  const abs = (a: string) => a.replace(/^([A-Z]+)(\d+)$/, '$$$1$$$2');
+  return !br || br === tl ? abs(tl) : `${abs(tl)}:${abs(br)}`;
+}
+
 export function planningFunction(pf: PlanningFunctionSpec, system: string, today: string): string {
   const vars = `<?xml version="1.0" encoding="UTF-8" standalone="no" ?><VARIABLES>${(pf.variables ?? [])
     .map((v) => `<VARIABLE name="${esc(v.name)}" type="INFO_OBJECT_MEMBER" isStateVariable="false"><SELECTIONS><SELECTION type="SINGLE_MEMBER"><MEMBER name="${esc(v.value)}" type="MEMBER" /></SELECTION></SELECTIONS></VARIABLE>`)
@@ -212,6 +243,113 @@ function promptXml(p: PromptValue): string {
   return `<VARIABLE name="${esc(p.name)}" type="INFO_OBJECT_MEMBER" isStateVariable="false"><SELECTIONS>${sel}</SELECTIONS></VARIABLE>`;
 }
 
+const variableName = (xml: string) => /\bname="([^"]*)"/.exec(xml)?.[1]?.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+/** Variable names with a value in a stored state (its VARIABLES block). */
+export function storedVariableNames(state: string): string[] {
+  const block = /<VARIABLES>([\s\S]*?)<\/VARIABLES>/.exec(state)?.[1] ?? '';
+  return [...block.matchAll(/<VARIABLE [^>]*>/g)].map((m) => variableName(m[0])!).filter(Boolean);
+}
+
+/** Set prompt values in a stored state: same-named variables are replaced, the others kept. */
+export function setStateVariables(state: string, prompts: PromptValue[]): string {
+  const block = /<VARIABLES>([\s\S]*?)<\/VARIABLES>|<VARIABLES\s*\/>/.exec(state);
+  const given = new Map(prompts.map((p) => [p.name, promptXml(p)]));
+  const entries = [...(block?.[1] ?? '').matchAll(/<VARIABLE [^>]*\/>|<VARIABLE [\s\S]*?<\/VARIABLE>/g)].map((m) => {
+    const name = variableName(m[0])!;
+    const xml = given.get(name) ?? m[0];
+    given.delete(name);
+    return xml;
+  });
+  const xml = `<VARIABLES>${[...entries, ...given.values()].join('')}</VARIABLES>`;
+  if (block) return state.slice(0, block.index) + xml + state.slice(block.index + block[0].length);
+  // AfO writes VARIABLES right after the QUERY element (not the one in SERVICE_DESCRIPTION).
+  const query = /<QUERY name="[^"]*"\s*\/>|<QUERY name="[^"]*">[\s\S]*?<\/QUERY>/.exec(state) ?? /<BICS_VIEW[^>]*>/.exec(state);
+  if (!query) throw new Error('The stored state is not a BICS view.');
+  const at = query.index + query[0].length;
+  return state.slice(0, at) + xml + state.slice(at);
+}
+
+/**
+ * Store prompt values in a data source of an AfO definition (`<DataProvider>` XML). A data
+ * source without a stored state gets a minimal one; `ResetDataSource` is switched off, since AfO
+ * discards the saved state of such a data source, prompts included. Returns notes for the caller.
+ */
+export function withStoredPrompts(dpXml: string, prompts: PromptValue[], minimalState: () => string): { xml: string; notes: string[] } {
+  const notes: string[] = [];
+  let xml = dpXml;
+  const compressed = /<BICS_VIEW_HEADER compressed="true">([^<]*)<\/BICS_VIEW_HEADER>/.exec(xml);
+  if (compressed) {
+    const state = setStateVariables(decodeCompressed(compressed[1]), prompts);
+    xml = xml.replace(compressed[0], () => `<BICS_VIEW_HEADER compressed="true">${compressBlock(state)}</BICS_VIEW_HEADER>`);
+  } else {
+    const plain = /<BICS_VIEW_HEADER>([\s\S]*?)<\/BICS_VIEW_HEADER>|<BICS_VIEW_HEADER\s*\/>/.exec(xml);
+    const design = /<TABLE_DESIGN>[\s\S]*?<\/TABLE_DESIGN>|<TABLE_DESIGN\s*\/>/.exec(plain?.[1] ?? '')?.[0];
+    let state = setStateVariables(minimalState(), prompts);
+    notes.push('had no stored navigation state; a minimal one now carries the prompts, so it opens in the query default view');
+    if (design && !/^<TABLE_DESIGN>\s*<STYLE_LIST\s*\/>\s*<OPERATION_LIST\s*\/>\s*<\/TABLE_DESIGN>$|^<TABLE_DESIGN\s*\/>$/.test(design)) {
+      state = state.replace('<DOCUMENT_APPLICATION_ASSIGNED', () => `${design}<DOCUMENT_APPLICATION_ASSIGNED`);
+      notes.push('its design rules (TABLE_DESIGN) moved into the stored state; check them after opening in AfO');
+    }
+    const header = `<BICS_VIEW_HEADER compressed="true">${compressBlock(state)}</BICS_VIEW_HEADER>`;
+    if (plain) xml = xml.replace(plain[0], () => header);
+    else if (/<DimensionSynchronization\s*\/>/.test(xml)) xml = xml.replace(/<DimensionSynchronization\s*\/>/, (m) => `${m}${header}`);
+    else xml = xml.replace(/<Comments\s*\/>|<Comments>|<\/DataProvider>/, (m) => `${header}${m}`);
+  }
+  if (/<ResetDataSource>True<\/ResetDataSource>/.test(xml)) {
+    // AfO writes the element only when the option is on.
+    xml = xml.replace(/<ResetDataSource>True<\/ResetDataSource>/, '');
+    notes.push('had "reset data source" on, which drops stored prompts on open; switched off');
+  }
+  return { xml, notes };
+}
+
+export interface VisibilityEntry { dataProvider?: string; name: string; xml: string }
+
+/** Variable entries of the PromptsVisibility block, with the data source they belong to (none when merged). */
+export function promptsVisibility(definition: string): VisibilityEntry[] {
+  return [...(firstElement(definition, 'PromptsVisibility') ?? '').matchAll(/<Variable [^>]*\/>/g)].map((m) => ({
+    dataProvider: /dataprovider="([^"]*)"/.exec(m[0])?.[1],
+    name: variableName(m[0].replace(/dataprovider="[^"]*"/, '')) ?? '',
+    xml: m[0],
+  }));
+}
+
+/** Add visibility entries for prompts that have none: per data source, or once when variables are merged. */
+export function addVisibility(entries: VisibilityEntry[], dataProvider: string, prompts: PromptValue[], merged: boolean): void {
+  const owner = merged ? undefined : dataProvider;
+  for (const p of prompts) {
+    if (entries.some((v) => v.name === p.name && v.dataProvider === owner)) continue;
+    entries.push({ dataProvider: owner, name: p.name, xml: `<Variable ${owner ? `dataprovider="${esc(owner)}" ` : ''}name="${esc(p.name)}" visible="True" />` });
+  }
+}
+
+/**
+ * Variables the workbook knows (visibility entries) but stores no value for, as a warning: AfO
+ * shows the prompt dialog when one of them is mandatory. Without BW access it cannot be told which are.
+ */
+export function unstoredPrompts(dataProviders: Array<{ key: string; xml: string }>, entries: VisibilityEntry[]): string | undefined {
+  const stored = new Map(dataProviders.map((dp) => {
+    const state = /<BICS_VIEW_HEADER compressed="true">([^<]*)</.exec(dp.xml)?.[1];
+    return [dp.key, new Set(state ? storedVariableNames(decodeCompressed(state)) : [])];
+  }));
+  const missing = entries.filter((v) => v.dataProvider === undefined
+    ? ![...stored.values()].some((s) => s.has(v.name))
+    : stored.has(v.dataProvider) && !stored.get(v.dataProvider)!.has(v.name));
+  if (!missing.length) return undefined;
+  return `No stored value for ${missing.map((v) => (v.dataProvider ? `${v.name} (${v.dataProvider})` : v.name)).join(', ')}: if a mandatory variable has no value, AfO shows the prompt dialog on open. Check the query variables (bw_get_query) and add the mandatory ones to prompts.`;
+}
+
+/** Problems of one prompt value, for spec validation. */
+export function promptProblems(p: Partial<PromptValue> | undefined, what: string): string[] {
+  const errors: string[] = [];
+  const kinds = [p?.member !== undefined, p?.literal !== undefined, p?.low !== undefined].filter(Boolean).length;
+  if (!p?.name) errors.push(`${what}: name is required.`);
+  if (kinds !== 1) errors.push(`${what} (${p?.name}): give exactly one of member, literal or low (with high).`);
+  if (p?.high !== undefined && p?.low === undefined) errors.push(`${what} (${p?.name}): high without low.`);
+  return errors;
+}
+
 /** The AXES block of a navigation state, in the form AfO writes it. */
 function axesXml(axes: DataProviderSpec['axes']): string {
   if (!axes) return '';
@@ -227,7 +365,7 @@ function axesXml(axes: DataProviderSpec['axes']): string {
  * document application is assigned; without any stored state AfO asks the server, and on a
  * system without document storage that ends in an exception once the crosstab is input-ready.
  */
-function stateXml(dp: DataProviderSpec, day: string): string {
+export function stateXml(dp: DataProviderSpec, day: string): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="no" ?><BICS_VIEW version="3.1"><SERVICE_DESCRIPTION><DATA_AREA>DEFAULT</DATA_AREA><QUERY>${esc(dp.query)}</QUERY></SERVICE_DESCRIPTION><MODULES />`
     + (dp.infoProvider ? `<INFO_PROVIDER name="${esc(dp.infoProvider)}" />` : '')
     + `<QUERY name="${esc(dp.query)}"><DUE_DATE>${day}</DUE_DATE></QUERY>`
@@ -238,7 +376,7 @@ function stateXml(dp: DataProviderSpec, day: string): string {
 }
 
 /** The `<Application>` document. `sheetIds` maps sheet names to their AfO ids. */
-export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, string>, today = new Date()): string {
+export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, string>, today = new Date(), warnings: string[] = []): string {
   const src = spec.sourceDefinition;
   const srcSystem = src ? sourceSystemInfo(src) : undefined;
   if (!spec.system && !srcSystem) throw new Error('No system: give system, or a source workbook with a connection.');
@@ -259,22 +397,34 @@ export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, str
   const renames = new Map(spec.dataProviders.filter((d) => d.from).map((d) => [d.from!, d.key]));
   const renameRefs = (xml: string) => xml.replace(/<DataProviderKey>([^<]*)<\/DataProviderKey>/g, (m, k: string) => (renames.has(k) ? `<DataProviderKey>${esc(renames.get(k)!)}</DataProviderKey>` : m));
 
-  const dps = spec.dataProviders.map((dp) => dp.from
-    ? replaceFirstKey(taken('DataProvider', dp.from, 'data source'), dp.key, esc)
+  const storePrompts = spec.storePrompts ?? (src ? firstElement(src, 'StorePromptsInDocument') === '<StorePromptsInDocument>True</StorePromptsInDocument>' : false);
+  const merged = spec.mergeVariables ?? (src ? firstElement(src, 'MergeVariables') === '<MergeVariables>True</MergeVariables>' : false);
+  if (!storePrompts && spec.dataProviders.some((dp) => dp.prompts?.length)) warnings.push('Prompts are given but StorePromptsInDocument is off: AfO ignores them. Set storePrompts: true.');
+  const takenDataProvider = (dp: DataProviderSpec) => {
+    const xml = replaceFirstKey(taken('DataProvider', dp.from!, 'data source'), dp.key, esc);
+    if (!dp.prompts?.length) return xml;
+    const r = withStoredPrompts(xml, dp.prompts, () => stateXml({ ...dp, prompts: undefined, axes: undefined }, day));
+    warnings.push(...r.notes.map((n) => `${dp.key}: ${n}.`));
+    return r.xml;
+  };
+  const dpXml = spec.dataProviders.map((dp) => dp.from
+    ? takenDataProvider(dp)
     : `<DataProvider><Key>${esc(dp.key)}</Key><FillableNumber>1</FillableNumber><RefreshDataEntryEnabled>${tf(dp.inputReady ?? true)}</RefreshDataEntryEnabled><Cleaned>False</Cleaned>`
       + `<DataSourceInfo><Id>${esc(dp.query)}</Id><Name>${esc(dp.query)}</Name><DisplayName>${esc(dp.query)}</DisplayName><Type>Query</Type><HasChildren>False</HasChildren><IsFormulaDriven>False</IsFormulaDriven><ShowScalingFactor>False</ShowScalingFactor><ShowUnits>False</ShowUnits>${sys}</DataSourceInfo>`
-      + `<DimensionSynchronization /><BICS_VIEW_HEADER compressed="true">${compressBlock(stateXml(dp, day))}</BICS_VIEW_HEADER><Comments /></DataProvider>`).join('');
+      + `<DimensionSynchronization /><BICS_VIEW_HEADER compressed="true">${compressBlock(stateXml(dp, day))}</BICS_VIEW_HEADER><Comments /></DataProvider>`);
+  const dps = dpXml.join('');
 
   // Prompt visibility: the source's entries for taken-over data sources, plus the new prompts.
-  const ownPrompts = spec.dataProviders.filter((dp) => !dp.from).flatMap((dp) => (dp.prompts ?? []).map((p) => `<Variable dataprovider="${esc(dp.key)}" name="${esc(p.name)}" visible="True" />`));
-  const srcPrompts = src
-    ? [...(firstElement(src, 'PromptsVisibility') ?? '').matchAll(/<Variable [^>]*\/>/g)]
-      .map((m) => m[0])
-      // Without a data source (merged variables) the entry applies to all; else it follows its data source.
-      .filter((v) => { const k = /dataprovider="([^"]*)"/.exec(v)?.[1]; return k === undefined || renames.has(k); })
-      .map((v) => v.replace(/dataprovider="([^"]*)"/, (_m, k: string) => `dataprovider="${esc(renames.get(k)!)}"`))
-    : [];
-  const prompts = [...srcPrompts, ...ownPrompts].join('');
+  // Without a data source (merged variables) an entry applies to all; else it follows its data source.
+  const visibility = (src ? promptsVisibility(src) : [])
+    .filter((v) => v.dataProvider === undefined || renames.has(v.dataProvider))
+    .map((v) => ({ ...v, dataProvider: v.dataProvider && renames.get(v.dataProvider), xml: v.xml.replace(/dataprovider="([^"]*)"/, (_m, k: string) => `dataprovider="${esc(renames.get(k)!)}"`) }));
+  for (const dp of spec.dataProviders) addVisibility(visibility, dp.key, dp.prompts ?? [], merged);
+  const prompts = visibility.map((v) => v.xml).join('');
+  if (storePrompts) {
+    const unstored = unstoredPrompts(spec.dataProviders.map((dp, i) => ({ key: dp.key, xml: dpXml[i] })), visibility);
+    if (unstored) warnings.push(unstored);
+  }
 
   const pfs = (spec.planningFunctions ?? []).map((pf) => pf.from
     ? renameRefs(replaceFirstKey(taken('Planning\\w+Usage', pf.from, 'planning object'), pf.key, esc))
@@ -284,10 +434,9 @@ export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, str
   const grids = spec.grids.map((g, i) => {
     const id = sheetId(g.sheet);
     if (g.from) {
-      return replaceFirstKey(taken('Grid', g.from, 'crosstab'), g.key, esc)
+      return moveRanges(replaceFirstKey(taken('Grid', g.from, 'crosstab'), g.key, esc)
         .replace(/<ShapeId>[^<]*<\/ShapeId>/, () => `<ShapeId>${i + 2}</ShapeId>`)
-        .replace(/<DataProviderKey>[^<]*<\/DataProviderKey>/, () => `<DataProviderKey>${esc(g.dataProviderKey)}</DataProviderKey>`)
-        .replace(/<Range Name="([^"]+)">[\s\S]*?<\/Range>/g, (_m, name: string) => range(name, id, g.cell));
+        .replace(/<DataProviderKey>[^<]*<\/DataProviderKey>/, () => `<DataProviderKey>${esc(g.dataProviderKey)}</DataProviderKey>`), id, g.cell);
     }
     return `<Grid><Key>${esc(g.key)}</Key><Description>${esc(g.key)}</Description><ShapeId>${i + 2}</ShapeId><DataProviderKey>${esc(g.dataProviderKey)}</DataProviderKey>`
       + range('RangeOccupied', id, g.cell) + range('RequestedRange', id, g.cell)
@@ -367,6 +516,22 @@ export function absolute(cell: string): string {
 export interface MakeOptions {
   /** Declare the workbook macro-enabled (.xlsm) even without VBA modules in the spec. */
   macroEnabled?: boolean;
+  /** Collects what the caller should check, e.g. variables without a stored value. */
+  warnings?: string[];
+}
+
+const HIDDEN_SHEET = '_com.sap.ip.bi.xl.hiddensheet';
+
+/** A sheet's custom properties: name → the part holding the value. */
+function sheetProperties(parts: Record<string, Uint8Array>, part: string, xml: string): Map<string, string> {
+  const relsPath = relsPartOf(part);
+  const targets = new Map(parts[relsPath] ? [...strFromU8(parts[relsPath]).matchAll(/<Relationship [^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map((m) => [m[1], m[2]]) : []);
+  const props = new Map<string, string>();
+  for (const m of xml.matchAll(/<customPr [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)) {
+    const target = targets.get(m[2]);
+    if (target) props.set(m[1], resolveTarget(part, target));
+  }
+  return props;
 }
 
 /** Make an existing .xlsx/.xlsm an AfO workbook according to the spec. */
@@ -397,20 +562,40 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
   }
   const workbookCodeName = /<workbookPr[^>]*codeName="([^"]+)"/.exec(wb)![1];
 
-  let cpIndex = 900;
+  // New custom property parts are numbered after the base's own.
+  let cpIndex = Math.max(900, ...Object.keys(parts).map((p) => Number(/^xl\/customProperty(\d+)\.bin$/.exec(p)?.[1] ?? 0)));
+  const addedProperties: string[] = [];
+  const newProperty = (value: string) => {
+    const n = ++cpIndex;
+    parts[`xl/customProperty${n}.bin`] = utf16(value);
+    addedProperties.push(`xl/customProperty${n}.bin`);
+    return n;
+  };
   const sheetIds = new Map<string, string>();
   const sheetCodeNames: string[] = [];
   const codeNameBySheet = new Map<string, string>();
+  let definitionCodeName = 'AfoDefinition';
+  // The definition sheet of a base that is already an AfO workbook: kept, only its definition is replaced.
+  let definitionSheet: { part: string; props: Map<string, string> } | undefined;
   const sheets = [...wb.matchAll(/<sheet [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)];
   sheets.forEach(([, name, rid], i) => {
     const part = 'xl/' + relTarget.get(rid)!.replace(/^\/?xl\//, '');
-    let xml = text(part);
+    // Cells the spec does not write stay byte for byte as they are (formulas, value metadata).
+    const original = text(part);
+    let xml = original;
+    const sheetName = name.replace(/&amp;/g, '&');
+    const props = sheetProperties(parts, part, xml);
     let codeName = /<sheetPr[^>]*codeName="([^"]+)"/.exec(xml)?.[1];
     if (!codeName) {
-      codeName = `Sheet${i + 1}`;
+      codeName = sheetName === HIDDEN_SHEET ? 'AfoDefinition' : `Sheet${i + 1}`;
       xml = /<sheetPr/.test(xml) ? xml.replace('<sheetPr', `<sheetPr codeName="${codeName}"`) : xml.replace(/(<worksheet[^>]*>)/, `$1<sheetPr codeName="${codeName}"/>`);
     }
-    const sheetName = name.replace(/&amp;/g, '&');
+    if (sheetName === HIDDEN_SHEET) {
+      definitionSheet = { part, props };
+      definitionCodeName = codeName;
+      if (xml !== original) parts[part] = strToU8(xml);
+      return;
+    }
     const renames = new Map(spec.dataProviders.filter((d) => d.from).map((d) => [d.from!, d.key]));
     const writes = [
       ...(spec.cells ?? []).filter((c) => c.sheet === sheetName).map((c) => ({ ref: c.cell, formula: c.formula, value: c.value })),
@@ -418,35 +603,70 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
     ];
     if (writes.length) xml = writeCells(xml, writes);
     sheetCodeNames.push(codeName);
-    codeNameBySheet.set(name.replace(/&amp;/g, '&'), codeName);
-    const afoId = `${codeName}|${guid()}`;
-    sheetIds.set(name.replace(/&amp;/g, '&'), afoId);
-    const a = ++cpIndex, b = ++cpIndex;
-    parts[`xl/customProperty${a}.bin`] = utf16(afoId);
-    parts[`xl/customProperty${b}.bin`] = utf16('AoWorksheetType');
-    const cps = `<customProperties><customPr name="_pios_id" r:id="rIdAfo${a}"/><customPr name="CofWorksheetType" r:id="rIdAfo${b}"/></customProperties>`;
-    // customProperties comes after pageMargins/pageSetup/headerFooter and before drawing.
-    if (/<drawing |<legacyDrawing /.test(xml)) xml = xml.replace(/(<drawing |<legacyDrawing )/, `${cps}$1`);
-    else xml = xml.replace('</worksheet>', `${cps}</worksheet>`);
-    if (!/xmlns:r=/.test(xml)) xml = xml.replace('<worksheet ', '<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ');
-    parts[part] = strToU8(xml);
-    const relsPath = part.replace(/([^/]+)$/, '_rels/$1.rels');
-    addRels(parts, relsPath, relXml(`rIdAfo${a}`, REL_CP, `../customProperty${a}.bin`) + relXml(`rIdAfo${b}`, REL_CP, `../customProperty${b}.bin`));
+    codeNameBySheet.set(sheetName, codeName);
+    // A sheet of an AfO or EPM workbook keeps its id; cells and items refer to it.
+    const ownId = props.get('_pios_id');
+    const afoId = ownId && parts[ownId] ? decodeText(parts[ownId]).replace(/\0+$/, '') : `${codeName}|${guid()}`;
+    sheetIds.set(sheetName, afoId);
+    const entries: string[] = [], rels: string[] = [];
+    if (!ownId || !parts[ownId]) {
+      // A _pios_id whose part is missing is replaced, never doubled.
+      xml = xml.replace(/<customPr [^>]*name="_pios_id"[^>]*\/>/, '');
+      const a = newProperty(afoId);
+      entries.push(`<customPr name="_pios_id" r:id="rIdAfo${a}"/>`);
+      rels.push(relXml(`rIdAfo${a}`, REL_CP, `../customProperty${a}.bin`));
+    }
+    if (!props.has('CofWorksheetType')) {
+      const b = newProperty('AoWorksheetType');
+      entries.push(`<customPr name="CofWorksheetType" r:id="rIdAfo${b}"/>`);
+      rels.push(relXml(`rIdAfo${b}`, REL_CP, `../customProperty${b}.bin`));
+    }
+    if (entries.length) {
+      // One customProperties per sheet: entries go into an existing one (AfO, EPM).
+      const cps = entries.join('');
+      if (/<customProperties>/.test(xml)) xml = xml.replace('</customProperties>', () => `${cps}</customProperties>`);
+      else if (/<customProperties\s*\/>/.test(xml)) xml = xml.replace(/<customProperties\s*\/>/, () => `<customProperties>${cps}</customProperties>`);
+      // customProperties comes after pageMargins/pageSetup/headerFooter and before drawing.
+      else if (/<drawing |<legacyDrawing /.test(xml)) xml = xml.replace(/(<drawing |<legacyDrawing )/, `<customProperties>${cps}</customProperties>$1`);
+      else xml = xml.replace('</worksheet>', `<customProperties>${cps}</customProperties></worksheet>`);
+      if (!/xmlns:r=/.test(xml)) xml = xml.replace('<worksheet ', '<worksheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ');
+      addRels(parts, relsPartOf(part), rels.join(''));
+    }
+    if (xml !== original) parts[part] = strToU8(xml);
   });
 
   // Hidden sheet with the definition.
-  const definition = buildDefinition(spec, sheetIds);
-  const h1 = ++cpIndex, h2 = ++cpIndex, h3 = ++cpIndex;
-  parts[`xl/customProperty${h1}.bin`] = utf16(`_com.sap.ip.bi.xl.hiddensheet|${guid()}`);
-  parts[`xl/customProperty${h2}.bin`] = utf16('AoWorksheetType');
-  parts[`xl/customProperty${h3}.bin`] = utf16(definition);
-  parts['xl/worksheets/sheet900.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr codeName="AfoDefinition"/><dimension ref="A1"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><sheetData/><pageMargins left="0.7" right="0.7" top="0.787401575" bottom="0.787401575" header="0.3" footer="0.3"/><customProperties><customPr name="_pios_id" r:id="rId1"/><customPr name="CofWorksheetType" r:id="rId2"/><customPr name="serializedData2" r:id="rId3"/></customProperties></worksheet>`);
-  parts['xl/worksheets/_rels/sheet900.xml.rels'] = strToU8(relsDoc(relXml('rId1', REL_CP, `../customProperty${h1}.bin`) + relXml('rId2', REL_CP, `../customProperty${h2}.bin`) + relXml('rId3', REL_CP, `../customProperty${h3}.bin`)));
-  wb = wb.replace('</sheets>', `<sheet name="_com.sap.ip.bi.xl.hiddensheet" sheetId="900" state="veryHidden" r:id="rIdAfoSheet"/></sheets>`);
-  let rels = wbRels.replace('</Relationships>', relXml('rIdAfoSheet', REL_WS, 'worksheets/sheet900.xml') + '</Relationships>');
+  const definition = buildDefinition(spec, sheetIds, undefined, options.warnings);
+  let rels = wbRels;
+  let oldItemKeys: string[] = [];
+  if (definitionSheet) {
+    const target = definitionSheet.props.get('serializedData2');
+    if (!target || !parts[target]) throw new Error('The AfO definition sheet of the base workbook has no definition (serializedData2).');
+    const old = parts[target];
+    oldItemKeys = [...(firstElement(decodeText(old), 'Items') ?? '').matchAll(/<Key>([^<]*)<\/Key>/g)].map((m) => m[1]);
+    const bom = old[0] === 0xff && old[1] === 0xfe;
+    parts[target] = bom ? new Uint8Array([0xff, 0xfe, ...utf16(definition)]) : utf16(definition);
+  } else {
+    const h1 = newProperty(`${HIDDEN_SHEET}|${guid()}`), h2 = newProperty('AoWorksheetType'), h3 = newProperty(definition);
+    parts['xl/worksheets/sheet900.xml'] = strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr codeName="AfoDefinition"/><dimension ref="A1"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><sheetData/><pageMargins left="0.7" right="0.7" top="0.787401575" bottom="0.787401575" header="0.3" footer="0.3"/><customProperties><customPr name="_pios_id" r:id="rId1"/><customPr name="CofWorksheetType" r:id="rId2"/><customPr name="serializedData2" r:id="rId3"/></customProperties></worksheet>`);
+    parts['xl/worksheets/_rels/sheet900.xml.rels'] = strToU8(relsDoc(relXml('rId1', REL_CP, `../customProperty${h1}.bin`) + relXml('rId2', REL_CP, `../customProperty${h2}.bin`) + relXml('rId3', REL_CP, `../customProperty${h3}.bin`)));
+    wb = wb.replace('</sheets>', `<sheet name="${HIDDEN_SHEET}" sheetId="900" state="veryHidden" r:id="rIdAfoSheet"/></sheets>`);
+    rels = rels.replace('</Relationships>', relXml('rIdAfoSheet', REL_WS, 'worksheets/sheet900.xml') + '</Relationships>');
+  }
 
-  // Defined names SAP<Key> for every item.
-  let names = [...spec.grids, ...(spec.formulaItems ?? [])].map((g) => `<definedName name="SAP${esc(g.key)}">${esc(quoteSheet(g.sheet))}!${absolute(g.cell)}</definedName>`).join('');
+  // Defined names SAP<Key> for every item, a crosstab over the area it occupies. Names of the
+  // base's old items and of the new ones go first, so none is defined twice.
+  const itemKeys = new Set([...oldItemKeys, ...spec.grids.map((g) => g.key), ...(spec.formulaItems ?? []).map((f) => f.key)].map((k) => `SAP${k}`.toUpperCase()));
+  wb = wb.replace(/<definedName [^>]*name="([^"]+)"[^>]*>[^<]*<\/definedName>/g, (m, n: string) => (itemKeys.has(n.toUpperCase()) && !/localSheetId=/.test(m) ? '' : m))
+    .replace(/<definedNames>\s*<\/definedNames>/, '');
+  const area = (g: GridSpec) => {
+    const xml = keyedElement(definition, 'Grid', g.key);
+    return (xml && occupiedArea(xml)) ?? absolute(g.cell);
+  };
+  let names = [
+    ...spec.grids.map((g) => `<definedName name="SAP${esc(g.key)}">${esc(quoteSheet(g.sheet))}!${area(g)}</definedName>`),
+    ...(spec.formulaItems ?? []).map((f) => `<definedName name="SAP${esc(f.key)}">${esc(quoteSheet(f.sheet))}!${absolute(f.cell)}</definedName>`),
+  ].join('');
   if (bridge) {
     const ref = (cell: string) => `${esc(quoteSheet(bridge.name))}!${cell}`;
     names += `<definedName name="${AGENT_NAMES.command}">${ref('$B$1')}</definedName><definedName name="${AGENT_NAMES.result}">${ref('$B$3')}</definedName><definedName name="${AGENT_NAMES.status}">${ref('$B$4')}</definedName>`;
@@ -457,11 +677,8 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
   // One override per custom property part: a workbook may already map ".bin" to another type
   // (printer settings), and Excel drops parts whose type does not match.
   let ct = text('[Content_Types].xml');
-  const cpOverrides = Object.keys(parts)
-    .filter((n) => /^xl\/customProperty9\d\d\.bin$/.test(n))
-    .map((n) => `<Override PartName="/${n}" ContentType="${CT_CP}"/>`)
-    .join('');
-  ct = ct.replace('</Types>', `${cpOverrides}<Override PartName="/xl/worksheets/sheet900.xml" ContentType="${CT_WS}"/>`
+  const cpOverrides = addedProperties.map((n) => `<Override PartName="/${n}" ContentType="${CT_CP}"/>`).join('');
+  ct = ct.replace('</Types>', () => cpOverrides + (definitionSheet ? '' : `<Override PartName="/xl/worksheets/sheet900.xml" ContentType="${CT_WS}"/>`)
     + (bridge ? `<Override PartName="/xl/worksheets/afoAgent.xml" ContentType="${CT_WS}"/>` : '') + '</Types>');
 
   // VBA project: document modules for the workbook and each sheet, plus the standard modules.
@@ -479,7 +696,7 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
     const modules: VbaModuleSource[] = [
       { name: workbookCodeName, type: 'document', document: 'workbook', code: docCode.get(workbookCodeName) ?? '' },
       ...sheetCodeNames.map((n): VbaModuleSource => ({ name: n, type: 'document', document: 'sheet', code: docCode.get(n) ?? '' })),
-      { name: 'AfoDefinition', type: 'document', document: 'sheet', code: '' },
+      { name: definitionCodeName, type: 'document', document: 'sheet', code: '' },
       ...standardModules.map((m): VbaModuleSource => ({ name: m.name, type: 'standard', code: m.code })),
     ];
     parts['xl/vbaProject.bin'] = writeVbaProject(modules);

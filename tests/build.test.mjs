@@ -202,8 +202,10 @@ test('buildWorkbook uses a template and finds the button shapes in it', () => wi
   assert.deepEqual(result.buttons, ['btnRun → Module1.Run']);
   assert.equal(result.base, template);
 
-  // A template that is already an AfO workbook is refused, so is a missing sheet.
-  assert.throws(() => buildWorkbook(SPEC, { output: join(dir, 'again.xlsm'), template: join(dir, 'built.xlsm') }), /already an Analysis for Office workbook/);
+  // A template that is already an AfO workbook is taken with a warning; a missing sheet is refused.
+  const again = buildWorkbook(SPEC, { output: join(dir, 'again.xlsm'), template: join(dir, 'built.xlsm') });
+  assert.ok(again.warnings.some((w) => /AfO definition is replaced/.test(w)), again.warnings.join(' | '));
+  assert.deepEqual(again.issues, []);
   assert.throws(() => buildWorkbook({ ...SPEC, grids: [{ key: 'Crosstab1', dataProviderKey: 'DS_1', sheet: 'Other', cell: 'A1' }] }, { output: join(dir, 'x.xlsm'), template }), /Sheet\(s\) not in the template: Other\. Template sheets: Plan Sheet\./);
 }));
 
@@ -443,4 +445,128 @@ test('VBA modules and sheet module code are taken over from the source workbook,
   assert.match(d.macros.modules.find((m) => m.name === 'Sheet1').source, /Target\.Address = "\$C\$22"/);
   assert.throws(() => buildWorkbook({ source, dataProviders: [{ key: 'DS_1', from: 'DS_1' }], grids: [], vbaModules: [{ name: 'X', from: 'Nope' }] },
     { output: join(dir, 'bad.xlsm') }), /no standard module Nope/);
+}));
+
+const fixture = await import('./_fixture.mjs');
+const { withStoredPrompts, moveRanges } = await import('../dist/build/afo.js');
+const { decodeCompressed } = await import('../dist/workbook/bics.js');
+
+const count = (s, re) => (s.match(re) ?? []).length;
+const sheetData = (xml) => /<sheetData[\s\S]*?<\/sheetData>|<sheetData\s*\/>/.exec(xml)[0];
+
+test('an AfO workbook is its own template: definition replaced in place, sheet ids, cells and VBA kept, prompts set', () => withDir((dir) => {
+  const source = join(dir, 'source.xlsm');
+  writeFileSync(source, fixture.buildWorkbook());
+  const output = join(dir, 'rebuilt.xlsm');
+  const r = buildWorkbook({
+    source,
+    storePrompts: true,
+    dataProviders: [{ key: 'DS_1', from: 'DS_1', prompts: [{ name: 'VAR_PERIOD', low: '202501', high: '202512' }] }],
+    grids: [{ key: 'Crosstab1', from: 'Crosstab1', sheet: 'Input', cell: 'A10' }],
+  }, { output, template: 'source' });
+  assert.ok(r.warnings.some((w) => /AfO definition is replaced/.test(w)), r.warnings.join(' | '));
+  // The source knows VAR_VERSION (visibility entry) but no data source stores a value for it.
+  assert.ok(r.warnings.some((w) => /No stored value for VAR_VERSION/.test(w)), r.warnings.join(' | '));
+  assert.deepEqual(r.crosstabs, ['Crosstab1 (DS_1) at Input!A10:AB21']);
+
+  const a = unzipSync(readFileSync(source)), b = unzipSync(readFileSync(output));
+  const wb = strFromU8(b['xl/workbook.xml']);
+  assert.equal(count(wb, /_com\.sap\.ip\.bi\.xl\.hiddensheet/g), 1);
+  assert.equal(b['xl/worksheets/sheet900.xml'], undefined);
+  // Exactly one customProperties per sheet, the sheet's own id kept, the missing type added.
+  const sheet = strFromU8(b['xl/worksheets/sheet2.xml']);
+  assert.equal(count(sheet, /<customProperties>/g), 1);
+  assert.equal(count(sheet, /name="_pios_id"/g), 1);
+  assert.equal(count(sheet, /name="CofWorksheetType"/g), 1);
+  assert.deepEqual(b['xl/customProperty3.bin'], a['xl/customProperty3.bin']);
+  assert.equal(sheetData(sheet), sheetData(strFromU8(a['xl/worksheets/sheet2.xml'])));
+  assert.deepEqual(b['xl/vbaProject.bin'], a['xl/vbaProject.bin']);
+
+  // The crosstab keeps the area it occupied (A10:AB21), in the definition and in its defined name.
+  const def = readSourceDefinition(output);
+  assert.match(keyedElement(def, 'Grid', 'Crosstab1'), /<SheetName>Sheet2\|guid-input<\/SheetName><Cell Name="TopLeft"><Col>0<\/Col><Row>9<\/Row><\/Cell><Cell Name="BottomRight"><Col>27<\/Col><Row>20<\/Row>/);
+  assert.equal(count(wb, /name="SAPCrosstab1"/g), 1);
+  assert.match(wb, /<definedName name="SAPCrosstab1">Input!\$A\$10:\$AB\$21<\/definedName>/);
+
+  // Prompts of a taken-over data source land in its stored state; the rest of the state stays.
+  const d = readWorkbook(output);
+  const ds = d.dataProviders.find((x) => x.key === 'DS_1');
+  assert.deepEqual(ds.state.variables.map((v) => [v.name, v.values]), [['VAR_PERIOD', ['202501 .. 202512']]]);
+  assert.equal(ds.state.infoProvider, 'PROVIDER_1');
+  assert.ok(ds.state.filters.some((f) => f.characteristic === 'CHAR_REGION'));
+  assert.match(firstElement(def, 'PromptsVisibility'), /<Variable dataprovider="DS_1" name="VAR_PERIOD" visible="True" \/>/);
+  assert.match(def, /<StorePromptsInDocument>True<\/StorePromptsInDocument>/);
+}));
+
+test('moveRanges keeps the size of every range and moves it to the new top-left cell', () => {
+  const grid = '<Grid><Range Name="RangeOccupied"><SheetName>S|1</SheetName><Cell Name="TopLeft"><Col>0</Col><Row>21</Row></Cell><Cell Name="BottomRight"><Col>5</Col><Row>86</Row></Cell></Range>'
+    + '<Range Name="RequestedRange"><SheetName>S|1</SheetName><Cell Name="TopLeft"><Col>0</Col><Row>21</Row></Cell><Cell Name="BottomRight"><Col>0</Col><Row>21</Row></Cell></Range></Grid>';
+  assert.equal(moveRanges(grid, 'T|2', 'C30'), grid.replace(/S\|1/g, 'T|2')
+    .replace('<Col>0</Col><Row>21</Row></Cell><Cell Name="BottomRight"><Col>5</Col><Row>86</Row>', '<Col>2</Col><Row>29</Row></Cell><Cell Name="BottomRight"><Col>7</Col><Row>94</Row>')
+    .replace('<Col>0</Col><Row>21</Row></Cell><Cell Name="BottomRight"><Col>0</Col><Row>21</Row>', '<Col>2</Col><Row>29</Row></Cell><Cell Name="BottomRight"><Col>2</Col><Row>29</Row>'));
+});
+
+test('a template sheet with EPM custom properties gets one merged customProperties; its cells stay byte for byte', () => withDir((dir) => {
+  const parts = unzipSync(baseWorkbook());
+  // As EPM writes it, plus a cell whose value metadata (vm) points into xl/metadata.xml.
+  const cells = '<sheetData><row r="14"><c r="B14" s="0" t="e" vm="2"><f ca="1">IFERROR(C14,"")</f><v>#VALUE!</v></c><c r="C14" t="str"><f>_xll.SAPGetMember("DS_1","CHAR_A")</f><v/></c></row></sheetData>';
+  parts['xl/worksheets/sheet1.xml'] = strToU8(strFromU8(parts['xl/worksheets/sheet1.xml']).replace('<sheetData/>', cells)
+    .replace('<drawing ', '<customProperties><customPr name="_pios_id" r:id="rId2"/><customPr name="EpmWorksheetKeyString_GUID" r:id="rId3"/></customProperties><drawing '));
+  parts['xl/worksheets/_rels/sheet1.xml.rels'] = strToU8(strFromU8(parts['xl/worksheets/_rels/sheet1.xml.rels']).replace('</Relationships>',
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customProperty" Target="../customProperty1.bin"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customProperty" Target="../customProperty2.bin"/></Relationships>'));
+  parts['xl/customProperty1.bin'] = new Uint8Array(Buffer.from('Sheet1|epm-guid', 'utf16le'));
+  parts['xl/customProperty2.bin'] = new Uint8Array(Buffer.from('epm-key', 'utf16le'));
+  const template = join(dir, 'epm.xlsx');
+  writeFileSync(template, zipSync(parts));
+
+  const output = join(dir, 'built.xlsm');
+  const r = buildWorkbook(SPEC, { output, template });
+  assert.deepEqual(r.issues, []);
+  const out = unzipSync(readFileSync(output));
+  const sheet = strFromU8(out['xl/worksheets/sheet1.xml']);
+  assert.equal(count(sheet, /<customProperties>/g), 1);
+  assert.equal(count(sheet, /name="_pios_id"/g), 1);
+  assert.match(sheet, /<customPr name="_pios_id" r:id="rId2"\/><customPr name="EpmWorksheetKeyString_GUID" r:id="rId3"\/><customPr name="CofWorksheetType" r:id="rIdAfo\d+"\/><\/customProperties><drawing /);
+  assert.equal(sheetData(sheet), cells);
+  // Items refer to the sheet by the id it already had.
+  assert.match(readSourceDefinition(output), /<SheetName>Sheet1\|epm-guid<\/SheetName>/);
+  assert.deepEqual(out['xl/customProperty2.bin'], parts['xl/customProperty2.bin']);
+}));
+
+test('withStoredPrompts merges into a stored state, or creates one and switches "reset data source" off', () => {
+  const minimal = '<?xml version="1.0"?><BICS_VIEW version="3.1"><QUERY name="Q"><DUE_DATE>20260101</DUE_DATE></QUERY><DOCUMENT_APPLICATION_ASSIGNED /></BICS_VIEW>';
+  const design = '<TABLE_DESIGN><STYLE_LIST><STYLE subType="CUSTOM" name="S1"><COLOR>-1</COLOR></STYLE></STYLE_LIST><OPERATION_LIST /></TABLE_DESIGN>';
+  const plain = `<DataProvider><Key>DS_1</Key><Cleaned>True</Cleaned><ResetDataSource>True</ResetDataSource><DimensionSynchronization /><BICS_VIEW_HEADER>${design}</BICS_VIEW_HEADER><Comments /></DataProvider>`;
+  const r = withStoredPrompts(plain, [{ name: 'V1', member: 'A' }], () => minimal);
+  assert.doesNotMatch(r.xml, /ResetDataSource/);
+  assert.equal(r.notes.length, 3);
+  const state = decodeCompressed(/compressed="true">([^<]*)</.exec(r.xml)[1]);
+  assert.equal(state, minimal.replace('</QUERY>', '</QUERY><VARIABLES><VARIABLE name="V1" type="INFO_OBJECT_MEMBER" isStateVariable="false"><SELECTIONS><SELECTION type="SINGLE_MEMBER"><MEMBER name="A" type="MEMBER" /></SELECTION></SELECTIONS></VARIABLE></VARIABLES>')
+    .replace('<DOCUMENT_APPLICATION_ASSIGNED', `${design}<DOCUMENT_APPLICATION_ASSIGNED`));
+
+  // A second call replaces V1 in place; a new variable is appended.
+  const again = withStoredPrompts(r.xml, [{ name: 'V2', literal: 'X' }, { name: 'V1', low: '1', high: '2' }], () => { throw new Error('not needed'); });
+  assert.deepEqual(again.notes, []);
+  const vars = decodeCompressed(/compressed="true">([^<]*)</.exec(again.xml)[1]);
+  assert.match(vars, /<VARIABLE name="V1"[^>]*><SELECTIONS><SELECTION type="INTERVAL">[\s\S]*<VARIABLE name="V2"[^>]*><SELECTIONS><SELECTION type="SINGLE_MEMBER"><MEMBER type="LITERAL_MEMBER"><VALUE>X</);
+});
+
+test('updateWorkbook stores prompts in an existing workbook and changes nothing else', () => withDir((dir) => {
+  const input = join(dir, 'existing.xlsx');
+  buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, storePrompts: false }, { output: input });
+  const output = join(dir, 'preset.xlsx');
+  const r = updateWorkbook({ prompts: { DS_1: { VAR_PERIOD: { low: '202601', high: '202612' }, VAR_NEW: 'M1' } } }, { input, output });
+  assert.deepEqual(r.issues, []);
+  assert.deepEqual(r.changes, ['prompts of DS_1: VAR_PERIOD, VAR_NEW', 'StorePromptsInDocument on']);
+
+  const d = readWorkbook(output);
+  assert.equal(d.settings.settings.StorePromptsInDocument, 'True');
+  assert.deepEqual(d.dataProviders[0].state.variables.map((v) => [v.name, v.values]), [['VAR_VERSION', ['"PLAN1"']], ['VAR_PERIOD', ['202601 .. 202612']], ['VAR_NEW', ['M1']]]);
+  assert.match(firstElement(readSourceDefinition(output), 'PromptsVisibility'), /dataprovider="DS_1" name="VAR_NEW"/);
+  // Every part but the definition is unchanged.
+  const a = unzipSync(readFileSync(input)), b = unzipSync(readFileSync(output));
+  assert.deepEqual(Object.keys(b).filter((n) => Buffer.compare(Buffer.from(a[n] ?? []), Buffer.from(b[n])) !== 0).length, 1);
+
+  assert.throws(() => updateWorkbook({ prompts: { DS_9: { V: 'X' }, DS_1: [{ name: 'V', member: 'A', literal: 'B' }] } }, { input, output: join(dir, 'bad.xlsx') }),
+    (e) => /DS_9 is not in the workbook/.test(e.message) && /exactly one of member, literal or low/.test(e.message));
 }));

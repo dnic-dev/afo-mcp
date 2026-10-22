@@ -6,7 +6,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, isAbsolute, resolve } from 'node:path';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readWorkbook } from '../workbook/read.js';
-import { type AfoWorkbookSpec, fromA1, makeAfoWorkbook } from './afo.js';
+import { type AfoWorkbookSpec, fromA1, makeAfoWorkbook, promptProblems } from './afo.js';
 import { agentSheetName, validateAgentBridge } from './agent.js';
 import { applySource, readSourceDefinition } from './source.js';
 
@@ -38,7 +38,10 @@ export type BuildSpec = Omit<AfoWorkbookSpec, 'vbaModules' | 'documentModules'> 
 
 export interface BuildOptions {
   output: string;
-  /** Workbook (.xlsx/.xlsm) with the layout: sheets, texts, formats, shapes for buttons. */
+  /**
+   * Workbook (.xlsx/.xlsm) with the layout: sheets, texts, formats, shapes for buttons. May be an
+   * AfO workbook (its definition is replaced, its sheet ids kept), or "source" for the spec's source.
+   */
   template?: string;
   /** Used when there is no template. */
   layout?: MinimalLayout;
@@ -116,12 +119,7 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
     claim(dp?.key, what);
     if (dp?.from && !s.source) errors.push(`${what}: from needs a source workbook (source).`);
     if (!dp?.from && (typeof dp?.query !== 'string' || !dp.query.trim())) errors.push(`${what}: query is required.`);
-    (dp?.prompts ?? []).forEach((p, j) => {
-      const kinds = [p.member !== undefined, p.literal !== undefined, p.low !== undefined].filter(Boolean).length;
-      if (!p.name) errors.push(`${what}.prompts[${j}]: name is required.`);
-      if (kinds !== 1) errors.push(`${what}.prompts[${j}] (${p.name}): give exactly one of member, literal or low (with high).`);
-      if (p.high !== undefined && p.low === undefined) errors.push(`${what}.prompts[${j}] (${p.name}): high without low.`);
-    });
+    (dp?.prompts ?? []).forEach((p, j) => errors.push(...promptProblems(p, `${what}.prompts[${j}]`)));
     for (const axis of ['rows', 'columns', 'free'] as const) {
       const v = dp?.axes?.[axis];
       if (v !== undefined && !Array.isArray(v)) errors.push(`${what}.axes.${axis} must be a list of names.`);
@@ -352,13 +350,17 @@ export function buildWorkbook(input: BuildSpec, options: BuildOptions): BuildRes
   let base: Uint8Array;
   let baseName: string;
   if (options.template) {
-    const template = resolve(options.template);
+    // "source": the source workbook is its own layout, rendered crosstabs and formulas included.
+    if (options.template === 'source' && !spec.source) throw new Error('template "source" needs a source workbook in the spec.');
+    const template = options.template === 'source'
+      ? (isAbsolute(spec.source!) ? spec.source! : resolve(options.baseDir ?? '', spec.source!))
+      : resolve(options.template);
     if (template.toLowerCase() === output.toLowerCase()) throw new Error('template and output must be different files.');
     if (!existsSync(template)) throw new Error(`The template does not exist: ${template}`);
     base = readFileSync(template);
     baseName = template;
     const t = inspectTemplate(base);
-    if (t.afo) errors.push('The template is already an Analysis for Office workbook. Use a plain layout workbook; the builder writes the complete AfO definition.');
+    if (t.afo) warnings.push('The template is an Analysis for Office workbook: its AfO definition is replaced by the spec, so data sources, planning objects and items the spec does not list (with from) are gone.');
     const missing = [...new Set([...(spec.grids ?? []), ...(spec.formulaItems ?? []), ...(spec.cells ?? [])].map((g) => g.sheet))].filter((s) => !t.sheets.includes(s));
     for (const pf of spec.planningFunctions ?? []) for (const v of pf.variableCells ?? []) {
       const ref = splitCellRef(v.cell ?? '');
@@ -392,7 +394,7 @@ export function buildWorkbook(input: BuildSpec, options: BuildOptions): BuildRes
     if (!existsSync(file)) throw new Error(`VBA module file not found for ${m.name}: ${file}`);
     return { name: m.name, code: readFileSync(file, 'utf8').replace(/^﻿/, '') };
   });
-  const bytes = makeAfoWorkbook(base, { ...spec, vbaModules, documentModules: spec.documentModules as Record<string, string> | undefined }, { macroEnabled: ext === '.xlsm' });
+  const bytes = makeAfoWorkbook(base, { ...spec, vbaModules, documentModules: spec.documentModules as Record<string, string> | undefined }, { macroEnabled: ext === '.xlsm', warnings });
   writeFileSync(output, bytes);
 
   const d = readWorkbook(output, { sections: ['sheets', 'items', 'macros'] });

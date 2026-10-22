@@ -1,5 +1,5 @@
-// Change an existing Analysis for Office workbook instead of rebuilding it: add planning
-// functions to its AfO definition, retrofit the agent bridge, add VBA modules. Everything else
+// Change an existing Analysis for Office workbook instead of rebuilding it: store prompt values,
+// add planning functions to its AfO definition, retrofit the agent bridge, add VBA modules. Everything else
 // (layout, formulas, data sources, crosstabs, existing macros) stays as it is.
 //
 // The workbook must be closed: while it is open, AfO holds the definition in memory and writes
@@ -10,16 +10,25 @@ import { extname, isAbsolute, resolve } from 'node:path';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readWorkbook } from '../workbook/read.js';
 import {
-  type AfoWorkbookSpec, CT_CP, CT_MACRO_MAIN, CT_VBA, CT_WS, type PlanningFunctionSpec, REL_CP, REL_VBA, REL_WS,
-  addRels, esc, guid, planningFunction, quoteSheet, relXml, utf16,
+  type AfoWorkbookSpec, CT_CP, CT_MACRO_MAIN, CT_VBA, CT_WS, type PlanningFunctionSpec, type PromptValue, REL_CP, REL_VBA, REL_WS,
+  addRels, addVisibility, esc, guid, planningFunction, promptProblems, promptsVisibility, quoteSheet, relXml, stateXml, unstoredPrompts, utf16,
+  withStoredPrompts,
 } from './afo.js';
+import { firstElement, keyedElement, keyedElements } from './source.js';
 import {
   AGENT_MODULE, AGENT_NAMES, AGENT_SHEET_CODE_NAME, type AgentBridgeSpec, agentModuleCode, agentSheetName, agentSheetXml, validateAgentBridge,
 } from './agent.js';
 import { type VbaModuleSource, writeVbaProject } from './vba.js';
 import { patchVbaProject, vbaModuleNames } from './vbaPatch.js';
 
+/** Prompt values of one data source: a list as in the build spec, or variable → member key or value object. */
+export type PromptInput = PromptValue[] | Record<string, string | Omit<PromptValue, 'name'>>;
+
 export interface UpdateOperations {
+  /** Prompt values to store, by data source key; other variables of the data source keep theirs. */
+  prompts?: Record<string, PromptInput>;
+  /** StorePromptsInDocument; true by default when prompts are given. */
+  storePrompts?: boolean;
   /** Planning functions to add to the AfO definition, bound to an existing data source. */
   planningFunctions?: PlanningFunctionSpec[];
   /** Retrofit the agent bridge (bridge sheet, AfoAgent module, event handlers). */
@@ -66,6 +75,19 @@ function resolvePart(owner: string, target: string): string {
   return parts.join('/');
 }
 
+function normalizePrompts(input: PromptInput): PromptValue[] {
+  if (Array.isArray(input)) return input;
+  return Object.entries(input ?? {}).map(([name, v]) => (typeof v === 'string' ? { name, member: v } : { ...v, name }));
+}
+
+/** Set a workbook setting such as StorePromptsInDocument, adding it after Cleaned when it is missing. */
+function setSetting(def: string, name: string, value: boolean): string {
+  const el = `<${name}>${value ? 'True' : 'False'}</${name}>`;
+  const re = new RegExp(`<${name}>[^<]*</${name}>|<${name}\\s*/>`);
+  if (re.test(def)) return def.replace(re, () => el);
+  return def.replace(/<\/Cleaned>|<PromptsVisibility/, (m) => (m === '</Cleaned>' ? `${m}${el}` : `${el}${m}`));
+}
+
 /** Put a line right after the header of an existing event handler, or append the handler. */
 function hookHandler(source: string, event: string, call: (param: string) => string, handler: string): string {
   const re = new RegExp(`^([ \\t]*(?:Private\\s+|Public\\s+)?Sub\\s+${event}\\s*\\(([^)]*)\\)[^\\r\\n]*)(\\r?\\n)`, 'im');
@@ -83,7 +105,11 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   if (existsSync(output) && !options.overwrite) throw new Error(`The output file exists: ${output}. Pass overwrite: true to replace it.`);
   const ext = extname(output).toLowerCase();
   if (ext !== '.xlsm' && ext !== '.xlsx') throw new Error(`output must end in .xlsx or .xlsm, got ${options.output}.`);
-  if (!ops.planningFunctions?.length && !ops.agentBridge && !ops.vbaModules?.length) throw new Error('Nothing to do: give planningFunctions, agentBridge or vbaModules.');
+  const prompts = Object.entries(ops.prompts ?? {}).map(([key, input]) => [key, normalizePrompts(input)] as const);
+  const storePrompts = ops.storePrompts ?? (prompts.length ? true : undefined);
+  if (!prompts.length && storePrompts === undefined && !ops.planningFunctions?.length && !ops.agentBridge && !ops.vbaModules?.length) {
+    throw new Error('Nothing to do: give prompts, storePrompts, planningFunctions, agentBridge or vbaModules.');
+  }
 
   const d = readWorkbook(input, { sections: ['sheets', 'dataProviders', 'planningObjects', 'items', 'macros'] });
   if (!d.afo) throw new Error('Not an Analysis for Office workbook (no AfO definition found).');
@@ -125,6 +151,14 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
     if (!Array.isArray(pf?.characteristics) || !pf.characteristics.length) errors.push(`${what} (${pf?.key}): characteristics must list the characteristics of the aggregation level.`);
   });
 
+  // Prompts.
+  for (const [key, list] of prompts) {
+    if (!dpKeys.has(key)) errors.push(`prompts.${key}: data source ${key} is not in the workbook. Data sources: ${[...dpKeys].join(', ')}.`);
+    if (!list.length) errors.push(`prompts.${key}: no values given.`);
+    list.forEach((p, j) => errors.push(...promptProblems(p, `prompts.${key}[${j}]`)));
+  }
+  if (storePrompts === false && prompts.length) warnings.push('storePrompts is false: the prompt values are written, but AfO ignores them until StorePromptsInDocument is on.');
+
   // Agent bridge.
   const sheetNames = (d.sheets ?? []).map((s) => s.name);
   const specLike = {
@@ -152,8 +186,8 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   let ct = text('[Content_Types].xml');
   const targets = relTargets(wbRels);
 
-  // --- Planning functions: into the definition on the hidden sheet.
-  if (ops.planningFunctions?.length) {
+  // --- The definition on the hidden sheet: prompts, settings, planning functions.
+  if (ops.planningFunctions?.length || prompts.length || storePrompts !== undefined) {
     const hidden = [...wb.matchAll(/<sheet [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)].find((m) => m[1] === HIDDEN_SHEET);
     if (!hidden) throw new Error('The AfO definition sheet was not found.');
     const sheetPart = resolvePart('xl/workbook.xml', targets.get(hidden[2])!);
@@ -165,16 +199,42 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
     const bom = raw[0] === 0xff && raw[1] === 0xfe;
     let def = raw.subarray(bom ? 2 : 0).toString('utf16le');
     const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const xml = ops.planningFunctions.map((pf) => {
+
+    if (prompts.length) {
+      const merged = firstElement(def, 'MergeVariables') === '<MergeVariables>True</MergeVariables>';
+      const visibility = promptsVisibility(def);
+      for (const [key, list] of prompts) {
+        const dpXml = keyedElement(def, 'DataProvider', key)!;
+        const dp = (d.dataProviders ?? []).find((x) => x.key === key)!;
+        const r = withStoredPrompts(dpXml, list, () => stateXml({ key, query: dp.dataSource ?? dp.dataSourceName ?? '', inputReady: dp.inputReady ?? false }, day));
+        def = def.replace(dpXml, () => r.xml);
+        addVisibility(visibility, key, list, merged);
+        warnings.push(...r.notes.map((n) => `${key}: ${n}.`));
+        changes.push(`prompts of ${key}: ${list.map((p) => p.name).join(', ')}`);
+      }
+      const block = `<PromptsVisibility>${visibility.map((v) => v.xml).join('')}</PromptsVisibility>`;
+      const current = firstElement(def, 'PromptsVisibility');
+      def = current ? def.replace(current, () => block) : def.replace(/<StyleSetName|<PlanningSystemDesignTime|<DataProviders/, (m) => `${block}${m}`);
+      const unstored = unstoredPrompts(keyedElements(def, 'DataProvider'), visibility);
+      if (unstored) warnings.push(unstored);
+    }
+    if (storePrompts !== undefined) {
+      def = setSetting(def, 'StorePromptsInDocument', storePrompts);
+      changes.push(`StorePromptsInDocument ${storePrompts ? 'on' : 'off'}`);
+    }
+
+    const xml = (ops.planningFunctions ?? []).map((pf) => {
       const dp = new RegExp(`<DataProvider>(?:(?!</DataProvider>).)*?<Key>${pf.dataProviderKey}</Key>(?:(?!</DataProvider>).)*?(<SystemInfo>.*?</SystemInfo>)`, 's').exec(def);
       if (!dp) throw new Error(`No system information found for data source ${pf.dataProviderKey}.`);
       changes.push(`planning function ${pf.key} = ${pf.name} on ${pf.dataProviderKey}`);
       return planningFunction(pf, dp[1], day);
     }).join('');
-    if (def.includes('</PlanningObjects>')) def = def.replace('</PlanningObjects>', () => `${xml}</PlanningObjects>`);
-    else if (/<PlanningObjects\s*\/>/.test(def)) def = def.replace(/<PlanningObjects\s*\/>/, () => `<PlanningObjects>${xml}</PlanningObjects>`);
-    else if (def.includes('</DataProviders>')) def = def.replace('</DataProviders>', () => `</DataProviders><PlanningObjects>${xml}</PlanningObjects>`);
-    else throw new Error('The AfO definition has no DataProviders section to place planning objects after.');
+    if (xml) {
+      if (def.includes('</PlanningObjects>')) def = def.replace('</PlanningObjects>', () => `${xml}</PlanningObjects>`);
+      else if (/<PlanningObjects\s*\/>/.test(def)) def = def.replace(/<PlanningObjects\s*\/>/, () => `<PlanningObjects>${xml}</PlanningObjects>`);
+      else if (def.includes('</DataProviders>')) def = def.replace('</DataProviders>', () => `</DataProviders><PlanningObjects>${xml}</PlanningObjects>`);
+      else throw new Error('The AfO definition has no DataProviders section to place planning objects after.');
+    }
     parts[defPart] = new Uint8Array(Buffer.concat([bom ? Buffer.from([0xff, 0xfe]) : Buffer.alloc(0), Buffer.from(def, 'utf16le')]));
   }
 

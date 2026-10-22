@@ -21,8 +21,9 @@ The tools unzip .xlsx/.xlsm files and parse or write the AfO definition Analysis
 - afo_where_used: every place a query, planning function, variable or characteristic occurs across a folder.
 - afo_build_workbook: write a new AfO workbook from a spec (data sources, crosstabs, planning functions,
   macros) onto a layout template or a generated minimal layout.
-- afo_update_workbook: change an existing AfO workbook (add planning functions, retrofit the agent bridge,
-  add VBA modules), keeping everything else.
+- afo_update_workbook: change an existing AfO workbook (store prompt values, add planning functions,
+  retrofit the agent bridge, add VBA modules), keeping everything else. For "same workbook, other
+  preset variables" use its prompts instead of rebuilding.
 
 Building: this server has no BW access. Take the facts a spec needs from the BW system first
 (bw-modeling-mcp): query variables and InfoProvider (bw_get_query), the characteristics of the
@@ -35,11 +36,30 @@ Excel with Analysis for Office, where the user logs on.
 What a workbook stores and what it does not:
 - Data sources carry their saved navigation state (filters, axes, hierarchies) only when AfO saved one;
   stateStored=false means the data source opens in the query's default view.
-- Query variable values are stored only when the workbook setting StorePromptsInDocument is True.
-  Planning function variables are always stored with the planning object.
+- Query variable values are stored only when the workbook setting StorePromptsInDocument is True,
+  and AfO drops them on open for a data source with ResetDataSource (no stored state). Give every
+  mandatory variable of the query a value, or AfO shows the prompt dialog. Planning function
+  variables are always stored with the planning object.
 - Structure members and some filter values appear as BW-internal IDs (e.g. 00O2TP…); resolving them
   needs the query definition from the BW system (bw-modeling-mcp: bw_get_query).
 - Sheet references use the visible sheet name; zero-based AfO coordinates are converted to A1.`;
+
+const PROMPT_VALUE_PROPERTIES = {
+  member: { type: 'string', description: 'Single value of a characteristic variable, internal key.' },
+  literal: { type: 'string', description: 'Literal value, e.g. a version typed in.' },
+  low: { type: 'string', description: 'Interval start, internal key (0CALMONTH: 202501).' },
+  high: { type: 'string', description: 'Interval end.' },
+} as const;
+
+const PROMPTS_SCHEMA = {
+  type: 'array',
+  description: 'Stored variable values, internal format. Each entry has exactly one of member, literal, low(+high).',
+  items: {
+    type: 'object',
+    properties: { name: { type: 'string' }, ...PROMPT_VALUE_PROPERTIES },
+    required: ['name'],
+  },
+} as const;
 
 const PLANNING_FUNCTIONS_SCHEMA = {
               type: 'array',
@@ -216,25 +236,11 @@ const TOOLS = [
                 type: 'object',
                 properties: {
                   key: { type: 'string', description: 'Alias, e.g. DS_1.' },
-                  from: { type: 'string', description: 'Take this data source over from the source workbook (its key there) with its whole stored state: filters incl. hierarchy nodes, display settings, design rules, exceptions, conditions, prompts. query and the other fields are then not needed.' },
+                  from: { type: 'string', description: 'Take this data source over from the source workbook (its key there) with its whole stored state: filters incl. hierarchy nodes, display settings, design rules, exceptions, conditions, prompts. query and the other fields are then not needed; prompts given here replace the stored values of those variables.' },
                   query: { type: 'string', description: 'Technical name of the query.' },
                   infoProvider: { type: 'string', description: 'The query\'s InfoProvider (for input-ready queries the aggregation level).' },
                   inputReady: { type: 'boolean', description: 'Default true.' },
-                  prompts: {
-                    type: 'array',
-                    description: 'Stored variable values, internal format. Each entry has exactly one of member, literal, low(+high).',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        name: { type: 'string' },
-                        member: { type: 'string', description: 'Single value of a characteristic variable, internal key.' },
-                        literal: { type: 'string', description: 'Literal value, e.g. a version typed in.' },
-                        low: { type: 'string', description: 'Interval start, internal key (0CALMONTH: 202501).' },
-                        high: { type: 'string', description: 'Interval end.' },
-                      },
-                      required: ['name'],
-                    },
-                  },
+                  prompts: PROMPTS_SCHEMA,
                   axes: {
                     type: 'object',
                     description: 'Stored layout. Characteristics by technical name, a key figure structure by its runtime UID. Omitted axes keep the query default.',
@@ -276,7 +282,7 @@ const TOOLS = [
           required: ['dataProviders', 'grids'],
         },
         spec_path: { type: 'string', description: 'Absolute path of a JSON file with the spec, instead of spec. Relative VBA module files resolve against its folder.' },
-        template: { type: 'string', description: 'Absolute path of a plain layout workbook (not yet an AfO workbook). Every crosstab sheet must exist in it; button shapes are found by name.' },
+        template: { type: 'string', description: 'Absolute path of the layout workbook, or "source" to use the spec\'s source workbook as its own layout. Every crosstab sheet must exist in it; button shapes are found by name. An AfO workbook (e.g. one fetched from BW) is accepted as it is: its AfO definition is replaced by the spec, its sheets keep their AfO ids, cells stay untouched. A crosstab taken over with from keeps the area it occupied, so its rendered cells in the template count as its own; at a new position the old rendered cells stay where they were.' },
         layout: {
           type: 'object',
           description: 'Generated minimal layout, used when there is no template. Sheets named by crosstabs and cell references are created automatically.',
@@ -306,12 +312,23 @@ const TOOLS = [
   {
     name: 'afo_update_workbook',
     description:
-      'Change an existing Analysis for Office workbook without Excel instead of rebuilding it: add planning functions to its AfO definition (bound to a data source already in the workbook), retrofit the agent bridge so Claude in Excel can operate it, add VBA modules. Layout, formulas, data sources, crosstabs and existing macros stay as they are; existing Workbook_Open/Workbook_SheetCalculate handlers get one call added. Writes a new file (output), never the input; the workbook must be closed in Excel. Everything is checked first and every problem reported at once. Signed VBA projects are refused.',
+      'Change an existing Analysis for Office workbook without Excel instead of rebuilding it: store prompt values (the workbook then opens in that selection without the prompt dialog), add planning functions to its AfO definition (bound to a data source already in the workbook), retrofit the agent bridge so Claude in Excel can operate it, add VBA modules. Layout, cells, data sources, crosstabs and existing macros stay as they are; existing Workbook_Open/Workbook_SheetCalculate handlers get one call added. Writes a new file (output), never the input; the workbook must be closed in Excel. Everything is checked first and every problem reported at once. Signed VBA projects are refused. Warnings name variables that still have no stored value.',
     inputSchema: {
       type: 'object',
       properties: {
         input: { type: 'string', description: 'Absolute path of the existing AfO workbook.' },
         output: { type: 'string', description: 'Absolute path of the changed copy (.xlsm when macros are involved).' },
+        prompts: {
+          type: 'object',
+          description: 'Prompt values by data source key, internal format: { "DS_1": { "VAR_A": "MEMBER_KEY", "VAR_B": { "low": "202501", "high": "202512" }, "VAR_C": { "literal": "PLAN1" } } } or a list as in afo_build_workbook. Variables not listed keep their stored value. A data source with "reset data source" on gets it switched off (AfO would drop the values), one without stored state gets a minimal state.',
+          additionalProperties: {
+            anyOf: [
+              PROMPTS_SCHEMA,
+              { type: 'object', additionalProperties: { anyOf: [{ type: 'string', description: 'Member, internal key.' }, { type: 'object', properties: PROMPT_VALUE_PROPERTIES }] } },
+            ],
+          },
+        },
+        storePrompts: { type: 'boolean', description: 'StorePromptsInDocument. Default true when prompts are given.' },
         planningFunctions: PLANNING_FUNCTIONS_SCHEMA,
         agentBridge: AGENT_BRIDGE_SCHEMA,
         vbaModules: VBA_MODULES_SCHEMA,
@@ -379,6 +396,8 @@ function runTool(name: string, args: Args): unknown {
     case 'afo_update_workbook':
       return updateWorkbook(
         {
+          prompts: typeof args.prompts === 'object' && args.prompts !== null ? (args.prompts as UpdateOperations['prompts']) : undefined,
+          storePrompts: typeof args.storePrompts === 'boolean' ? args.storePrompts : undefined,
           planningFunctions: args.planningFunctions as UpdateOperations['planningFunctions'],
           agentBridge: args.agentBridge as UpdateOperations['agentBridge'],
           vbaModules: args.vbaModules as UpdateOperations['vbaModules'],
