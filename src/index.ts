@@ -8,6 +8,7 @@ import { dirname, resolve } from 'node:path';
 
 import { type BuildSpec, type MinimalLayout, buildWorkbook } from './build/build.js';
 import { type UpdateOperations, updateWorkbook } from './build/update.js';
+import { type OpenPrompt, logonStatus, openWorkbook } from './operate/open.js';
 import { SECTIONS, type Section, readWorkbook } from './workbook/read.js';
 import { scanWorkbooks, whereUsed } from './workbook/scan.js';
 
@@ -24,6 +25,9 @@ The tools unzip .xlsx/.xlsm files and parse or write the AfO definition Analysis
 - afo_update_workbook: change an existing AfO workbook (store prompt values, add planning functions,
   retrofit the agent bridge, add VBA modules), keeping everything else. For "same workbook, other
   preset variables" use its prompts instead of rebuilding.
+- afo_open_workbook: open a workbook in Excel on this machine for the user, logged on, with prompt
+  values set and the data refreshed (needs Windows, Excel and Analysis for Office). Logon data comes
+  from this server's environment, never from arguments.
 
 Building: this server has no BW access. Take the facts a spec needs from the BW system first
 (bw-modeling-mcp): query variables and InfoProvider (bw_get_query), the characteristics of the
@@ -339,6 +343,36 @@ const TOOLS = [
       required: ['input', 'output'],
     },
   },
+  {
+    name: 'afo_open_workbook',
+    description:
+      'Open an Analysis for Office workbook in Excel on this machine so the user sees the data at once: starts Excel (it stays open for the user), logs on with the credentials configured for this server (AFO_LOGON_* environment; only for the workbook system they are configured for, never passed as arguments), sets prompt values with SAPSetVariable, refreshes, and saves on request. Needs Windows, Excel and Analysis for Office. A workbook with "refresh on open" may show the AfO logon dialog itself before the logon can be scripted. Returns the steps, the variable values after the refresh, used ranges per sheet, AfO messages and open dialogs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path of the workbook.' },
+        prompts: {
+          type: 'array',
+          description: 'Variable values to set after logon.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Technical variable name.' },
+              value: { type: 'string', description: 'Value, internal key by default.' },
+              format: { type: 'string', enum: ['INTERNAL_KEY', 'INPUT_STRING'], description: 'INTERNAL_KEY (default) or INPUT_STRING (as typed in the prompt dialog).' },
+              dataProvider: { type: 'string', description: 'Data source key (default: the first one).' },
+            },
+            required: ['name', 'value'],
+          },
+        },
+        logon: { type: 'boolean', description: 'Log on with the configured credentials (default true).' },
+        save: { type: 'boolean', description: 'Save the workbook after the refresh (default false).' },
+        timeoutSeconds: { type: 'number', description: 'Overall timeout (default 900).' },
+        logonWaitSeconds: { type: 'number', description: 'How long to retry the logon while Excel still shows the security bar (content disabled; AfO refuses the logon then). Default 90. Tell the user beforehand to click Enable Content unless the workbook is in a trusted location.' },
+      },
+      required: ['path'],
+    },
+  },
 ] as const;
 
 type Args = Record<string, unknown>;
@@ -351,6 +385,15 @@ function str(args: Args, key: string): string {
 
 function runTool(name: string, args: Args): unknown {
   switch (name) {
+    case 'afo_open_workbook':
+      return openWorkbook({
+        path: str(args, 'path'),
+        prompts: Array.isArray(args.prompts) ? (args.prompts as OpenPrompt[]) : undefined,
+        logon: typeof args.logon === 'boolean' ? args.logon : undefined,
+        save: args.save === true,
+        timeoutSeconds: typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : undefined,
+        logonWaitSeconds: typeof args.logonWaitSeconds === 'number' ? args.logonWaitSeconds : undefined,
+      });
     case 'afo_read_workbook': {
       const sections = Array.isArray(args.sections) ? (args.sections as string[]) : undefined;
       const unknown = sections?.filter((s) => !(SECTIONS as readonly string[]).includes(s));
@@ -420,7 +463,7 @@ export function createServer(): Server {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.map((t) => ({ ...t })) }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
-      const result = runTool(request.params.name, (request.params.arguments ?? {}) as Args);
+      const result = await runTool(request.params.name, (request.params.arguments ?? {}) as Args);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     } catch (err) {
       return { content: [{ type: 'text', text: `Error: ${(err as Error).message}` }], isError: true };
@@ -431,5 +474,5 @@ export function createServer(): Server {
 
 export async function startStdio(): Promise<void> {
   await createServer().connect(new StdioServerTransport());
-  process.stderr.write(`afo-mcp ${version} started\n`);
+  process.stderr.write(`afo-mcp ${version} started; ${logonStatus()}\n`);
 }
