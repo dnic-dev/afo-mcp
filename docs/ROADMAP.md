@@ -200,10 +200,13 @@ the afo-mcp parser. Tracked as issues in the bw-modelling-skills repository.
 
 ### G. Operate tools for Claude Code
 
-- [ ] A persistent Excel session behind MCP tools (`afo_open`, `afo_logon` with credentials from
-      the environment, `afo_refresh`, `afo_set_variables`, `afo_read_crosstab`,
-      `afo_execute_planning`, `afo_save_plan` / `afo_reset_plan`, `afo_messages`, `afo_close`),
-      with dialog watcher and fresh file copies. Needed to run the parcours unattended.
+- [x] `afo_open_workbook`: open a workbook logged on (credentials per system from the environment,
+      through a vault starter), prompt values, refresh, save. Excel runs outside the server.
+- [x] `afo_quick_report`: ad-hoc .xlsx for one query, connection from the SAP Logon landscape,
+      opened logged on with the data.
+- [ ] Further tools on the open session (`afo_set_variables`, `afo_read_crosstab`,
+      `afo_execute_planning`, `afo_save_plan` / `afo_reset_plan`, `afo_messages`), with a dialog
+      watcher. Needed to run the parcours unattended.
 
 ### H. Central hosting (later)
 
