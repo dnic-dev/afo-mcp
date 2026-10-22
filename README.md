@@ -170,6 +170,22 @@ Issues and feature requests are welcome. The most useful contribution is to try 
 
 ---
 
+## Disclaimer
+
+afo-mcp is an independent open-source project. It is not affiliated with, endorsed by or
+supported by SAP SE. SAP, SAP BW/4HANA and SAP Analysis for Office are trademarks or
+registered trademarks of SAP SE in Germany and other countries.
+
+The server reads and writes the format Analysis for Office stores in workbook files,
+derived from saved workbooks, and drives Analysis for Office through its documented API.
+It contains no SAP code. The format is not documented by SAP and may change with new
+Analysis for Office releases.
+
+The operate tools and the agent bridge change data in your BW system as a user would. Use
+them at your own risk, and test with non-productive systems first.
+
+---
+
 ## License
 
 MIT
