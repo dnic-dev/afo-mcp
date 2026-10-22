@@ -5,12 +5,14 @@
 //
 // Logon data comes from the environment of this server, never from tool arguments:
 //   AFO_LOGON_SYSTEMS   JSON list, one entry per system:
-//                       [{ "system": "ABC", "client": "100", "user": "USER", "language": "DE",
-//                          "vault": "bw-modeling-mcp@abc", "passwordVar": "BW_PASSWORD" }]
-//                       With "vault", the PowerShell child is started through the vault starter
-//                       (AFO_VAULT_STARTER, run with AFO_VAULT_PYTHON), which puts the entry's
-//                       secrets into that child's environment only; this server never holds them.
-//                       Without "vault", the password is read from this server's environment.
+//                       [{ "system": "SYS", "client": "100", "user": "USER", "language": "EN",
+//                          "vault": "entry-name", "passwordVar": "SAP_PASSWORD" }]
+//   AFO_SECRET_COMMAND  JSON array: the command prefix of a secret runner that starts a command
+//                       with the secrets of an entry in its environment, "{vault}" standing for
+//                       the entry, e.g. ["op", "run", "--env-file", "{vault}.env", "--"]. For an
+//                       entry with "vault", the logon child runs through it, so this server never
+//                       holds the password. Without "vault", the password is read from this
+//                       server's environment (variable passwordVar).
 //   AFO_LOGON_SYSTEM, AFO_LOGON_CLIENT, AFO_LOGON_USER, AFO_LOGON_LANGUAGE, AFO_LOGON_PASSWORD_ENV:
 //                       the same for a single system.
 // The password reaches the PowerShell child through its environment only.
@@ -71,6 +73,16 @@ export function logonConfigs(env: NodeJS.ProcessEnv = process.env): LogonConfig[
   }
   // An entry without a vault needs its password in this environment.
   return list.filter((l) => l.vault || env[l.passwordVar]);
+}
+
+/** The secret runner prefix for a vault entry, from AFO_SECRET_COMMAND. */
+export function secretCommand(env: NodeJS.ProcessEnv, vault: string): string[] {
+  let prefix: unknown;
+  try { prefix = JSON.parse(env.AFO_SECRET_COMMAND ?? ''); } catch { prefix = undefined; }
+  if (!Array.isArray(prefix) || !prefix.length || !prefix.every((p) => typeof p === 'string')) {
+    throw new Error(`The logon uses the secret entry "${vault}", but AFO_SECRET_COMMAND is not a JSON array of strings.`);
+  }
+  return (prefix as string[]).map((p) => p.replaceAll('{vault}', vault));
 }
 
 /** The logon for one system; without a system, the only one configured. */
@@ -236,9 +248,7 @@ export async function openWorkbook(options: OpenOptions, env: NodeJS.ProcessEnv 
     const ps = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-ArgsFile', argsFile];
     let cmd = ps;
     if (logon?.vault) {
-      const python = env.AFO_VAULT_PYTHON, starter = env.AFO_VAULT_STARTER;
-      if (!python || !starter) throw new Error(`The logon for ${logon.system} uses vault ${logon.vault}, but AFO_VAULT_PYTHON or AFO_VAULT_STARTER is not set.`);
-      cmd = [python, '-I', starter, 'run', logon.vault, '--', ...ps];
+      cmd = [...secretCommand(env, logon.vault), ...ps];
     }
     const stdout = await new Promise<string>((ok, fail) => {
       execFile(cmd[0], cmd.slice(1),
