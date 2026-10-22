@@ -29,9 +29,9 @@ const pad = (n: number) => String(n).padStart(2, '0');
 const stamp = (d = new Date()) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 
 export async function quickReport(o: QuickReportOptions, env: NodeJS.ProcessEnv = process.env): Promise<unknown> {
-  const logon = logonConfig(env);
-  const systemId = (o.system ?? logon?.system ?? '').toUpperCase();
-  if (!systemId) throw new Error('No system: give system, or configure the logon (AFO_LOGON_SYSTEM).');
+  const systemId = (o.system ?? logonConfig(undefined, env)?.system ?? '').toUpperCase();
+  if (!systemId) throw new Error('No system: give system (several logons are configured, or none).');
+  const logon = logonConfig(systemId, env);
   const client = o.client ?? (logon?.system === systemId ? logon.client : undefined);
   if (!client) throw new Error(`No client for ${systemId}: give client.`);
   const language = o.language ?? (logon?.system === systemId ? logon.language : undefined) ?? 'DE';

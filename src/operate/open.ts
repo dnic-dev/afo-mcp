@@ -4,12 +4,15 @@
 // stays open for the user when the server stops.
 //
 // Logon data comes from the environment of this server, never from tool arguments:
-//   AFO_LOGON_SYSTEM    system id the logon is for (e.g. ABC); other systems are not logged on
-//   AFO_LOGON_CLIENT    client
-//   AFO_LOGON_USER      user
-//   AFO_LOGON_LANGUAGE  optional logon language
-//   AFO_LOGON_PASSWORD_ENV  name of the variable holding the password (default AFO_LOGON_PASSWORD),
-//                       so a password vault entry can be reused under its own name
+//   AFO_LOGON_SYSTEMS   JSON list, one entry per system:
+//                       [{ "system": "ABC", "client": "100", "user": "USER", "language": "DE",
+//                          "vault": "bw-modeling-mcp@abc", "passwordVar": "BW_PASSWORD" }]
+//                       With "vault", the PowerShell child is started through the vault starter
+//                       (AFO_VAULT_STARTER, run with AFO_VAULT_PYTHON), which puts the entry's
+//                       secrets into that child's environment only; this server never holds them.
+//                       Without "vault", the password is read from this server's environment.
+//   AFO_LOGON_SYSTEM, AFO_LOGON_CLIENT, AFO_LOGON_USER, AFO_LOGON_LANGUAGE, AFO_LOGON_PASSWORD_ENV:
+//                       the same for a single system.
 // The password reaches the PowerShell child through its environment only.
 
 import { execFile } from 'node:child_process';
@@ -44,28 +47,50 @@ export interface LogonConfig {
   client: string;
   user: string;
   language?: string;
-  password: string;
+  /** Vault entry whose secrets the vault starter hands to the logon child. */
+  vault?: string;
+  /** Variable that holds the password (in the vault entry, or in this server's environment). */
+  passwordVar: string;
 }
 
-export function logonConfig(env: NodeJS.ProcessEnv = process.env): LogonConfig | undefined {
-  const pwVar = env.AFO_LOGON_PASSWORD_ENV || 'AFO_LOGON_PASSWORD';
+/** Configured logons, one per system id. */
+export function logonConfigs(env: NodeJS.ProcessEnv = process.env): LogonConfig[] {
+  const list: LogonConfig[] = [];
+  if (env.AFO_LOGON_SYSTEMS) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(env.AFO_LOGON_SYSTEMS); } catch { throw new Error('AFO_LOGON_SYSTEMS is not valid JSON.'); }
+    for (const e of Array.isArray(parsed) ? (parsed as Array<Record<string, string>>) : []) {
+      if (!e.system || !e.client || !e.user) continue;
+      list.push({ system: e.system.toUpperCase(), client: e.client, user: e.user, language: e.language || undefined, vault: e.vault || undefined, passwordVar: e.passwordVar || 'BW_PASSWORD' });
+    }
+  }
   const { AFO_LOGON_SYSTEM: system, AFO_LOGON_CLIENT: client, AFO_LOGON_USER: user } = env;
-  const password = env[pwVar];
-  if (!system || !client || !user || !password) return undefined;
-  return { system: system.toUpperCase(), client, user, language: env.AFO_LOGON_LANGUAGE || undefined, password };
+  const passwordVar = env.AFO_LOGON_PASSWORD_ENV || 'AFO_LOGON_PASSWORD';
+  if (system && client && user && !list.some((l) => l.system === system.toUpperCase())) {
+    list.push({ system: system.toUpperCase(), client, user, language: env.AFO_LOGON_LANGUAGE || undefined, passwordVar });
+  }
+  // An entry without a vault needs its password in this environment.
+  return list.filter((l) => l.vault || env[l.passwordVar]);
 }
 
-/** Configured logon without the password, for status output. */
+/** The logon for one system; without a system, the only one configured. */
+export function logonConfig(system?: string, env: NodeJS.ProcessEnv = process.env): LogonConfig | undefined {
+  const all = logonConfigs(env);
+  return system ? all.find((l) => l.system === system.toUpperCase()) : all.length === 1 ? all[0] : undefined;
+}
+
+/** Configured logons without passwords, for status output. */
 export function logonStatus(env: NodeJS.ProcessEnv = process.env): string {
-  const c = logonConfig(env);
-  return c ? `logon configured for ${c.system} (client ${c.client}, user ${c.user})` : 'no logon configured: the user logs on in Excel';
+  const all = logonConfigs(env);
+  return all.length ? `logon configured for ${all.map((c) => `${c.system}/${c.client}`).join(', ')}` : 'no logon configured: the user logs on in Excel';
 }
 
 const PS_SCRIPT = String.raw`
 param([string]$ArgsFile)
 $ErrorActionPreference = 'Stop'
 $a = Get-Content -Raw -Encoding UTF8 $ArgsFile | ConvertFrom-Json
-$secret = $env:AFO_LOGON_SECRET; Remove-Item Env:AFO_LOGON_SECRET -ErrorAction SilentlyContinue
+$secret = $null
+if ($a.passwordVar) { $secret = [Environment]::GetEnvironmentVariable($a.passwordVar); [Environment]::SetEnvironmentVariable($a.passwordVar, $null) }
 Add-Type @'
 using System; using System.Text; using System.Runtime.InteropServices;
 public static class AfoXl {
@@ -190,12 +215,8 @@ export async function openWorkbook(options: OpenOptions, env: NodeJS.ProcessEnv 
   const notes: string[] = [];
   let logon: LogonConfig | undefined;
   if (options.logon !== false) {
-    logon = logonConfig(env);
-    if (!logon) notes.push('No logon configured for this server: the user logs on in Excel.');
-    else if (facts.systemId && facts.systemId.toUpperCase() !== logon.system) {
-      notes.push(`The workbook is for ${facts.systemId}, the configured logon for ${logon.system}: the user logs on in Excel.`);
-      logon = undefined;
-    }
+    logon = facts.systemId ? logonConfig(facts.systemId, env) : undefined;
+    if (!logon) notes.push(`No logon configured for ${facts.systemId ?? 'the workbook system'}: the user logs on in Excel.`);
   }
   const prompts = (options.prompts ?? []).map((p) => ({
     name: p.name, value: p.value, format: p.format ?? 'INTERNAL_KEY', dataProvider: p.dataProvider ?? facts.dataProviders[0],
@@ -210,13 +231,18 @@ export async function openWorkbook(options: OpenOptions, env: NodeJS.ProcessEnv 
     writeFileSync(script, '﻿' + PS_SCRIPT, 'utf8');
     writeFileSync(argsFile, JSON.stringify({
       path, prompts, save: options.save === true, logonWaitSeconds: options.logonWaitSeconds ?? 90, dataProviders: facts.dataProviders,
-      client: logon?.client, user: logon?.user, language: logon?.language,
+      client: logon?.client, user: logon?.user, language: logon?.language, passwordVar: logon?.passwordVar,
     }), 'utf8');
-    const childEnv: NodeJS.ProcessEnv = { ...env };
-    if (logon) childEnv.AFO_LOGON_SECRET = logon.password;
+    const ps = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-ArgsFile', argsFile];
+    let cmd = ps;
+    if (logon?.vault) {
+      const python = env.AFO_VAULT_PYTHON, starter = env.AFO_VAULT_STARTER;
+      if (!python || !starter) throw new Error(`The logon for ${logon.system} uses vault ${logon.vault}, but AFO_VAULT_PYTHON or AFO_VAULT_STARTER is not set.`);
+      cmd = [python, '-I', starter, 'run', logon.vault, '--', ...ps];
+    }
     const stdout = await new Promise<string>((ok, fail) => {
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-ArgsFile', argsFile],
-        { env: childEnv, timeout: (options.timeoutSeconds ?? 900) * 1000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      execFile(cmd[0], cmd.slice(1),
+        { env, timeout: (options.timeoutSeconds ?? 900) * 1000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
         (err, out, errOut) => (err && !out ? fail(new Error(`${err.message}${errOut ? `: ${errOut.slice(0, 500)}` : ''}`)) : ok(out)));
     });
     const json = stdout.trim().split(/\r?\n/).pop() ?? '{}';
