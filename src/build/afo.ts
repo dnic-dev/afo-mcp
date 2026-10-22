@@ -109,6 +109,8 @@ export interface AfoWorkbookSpec {
   /** The source workbook's AfO definition, loaded by the build step. */
   sourceDefinition?: string;
   refreshOnOpen?: boolean;
+  /** AfO "remove data before saving" (stored as Cleaned). Off keeps the last result in the saved file. */
+  removeDataOnSave?: boolean;
   changeModeOnOpen?: boolean;
   storePrompts?: boolean;
   /** Share variables of the same name between data sources and planning objects (AfO default: off). */
@@ -452,7 +454,7 @@ export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, str
   const design = spec.system || !src ? ownDesign : fromSource('PlanningSystemDesignTime', ownDesign);
   const revision = spec.afoRevision ?? (src && /<AAO_Revision>([^<]*)<\/AAO_Revision>/.exec(src)?.[1]) ?? '2.8.2301.1605';
   return `<Application xmlns="${AFO_NAMESPACE}"><com.sap.ip.bi.pioneer><Version>12</Version><AAO_Revision>${esc(revision)}</AAO_Revision><SystemId>${esc(systemId)}</SystemId>`
-    + setting('RefreshOnOpen', spec.refreshOnOpen, false) + setting('PlanningModeSetToChangeMode', spec.changeModeOnOpen, false) + `<Cleaned>True</Cleaned>`
+    + setting('RefreshOnOpen', spec.refreshOnOpen, false) + setting('PlanningModeSetToChangeMode', spec.changeModeOnOpen, false) + setting('Cleaned', spec.removeDataOnSave, true)
     + fromSource('ForcePromptOnInitialRefresh', '<ForcePromptOnInitialRefresh>False</ForcePromptOnInitialRefresh>')
     + setting('StorePromptsInDocument', spec.storePrompts, false) + setting('MergeVariables', spec.mergeVariables, false)
     + fromSource('RefreshPlanningObjectsOnRefreshAll', '<RefreshPlanningObjectsOnRefreshAll>True</RefreshPlanningObjectsOnRefreshAll>')

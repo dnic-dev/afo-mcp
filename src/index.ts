@@ -226,6 +226,7 @@ const TOOLS = [
               required: ['systemId', 'systemName', 'client', 'language'],
             },
             refreshOnOpen: { type: 'boolean', description: 'Refresh all data sources when the workbook opens.' },
+            removeDataOnSave: { type: 'boolean', description: 'AfO "remove data before saving" (default on; with a source, the setting of the source). Off keeps the last result in the saved file.' },
             changeModeOnOpen: { type: 'boolean', description: 'Planning: open input-ready data sources in change mode.' },
             storePrompts: { type: 'boolean', description: 'Store prompt values in the workbook (StorePromptsInDocument). Set true when prompts are given.' },
             mergeVariables: { type: 'boolean', description: 'Share variables of the same name across data sources and planning objects (AfO default false).' },
