@@ -1,61 +1,175 @@
 # afo-mcp
 
-A Model Context Protocol (MCP) server for SAP Analysis for Office (AfO) workbooks.
+A Model Context Protocol (MCP) server that lets AI assistants like Claude work with **SAP Analysis for Office (AfO)** workbooks — reading what a workbook contains, building and changing workbooks, and opening them in Excel logged on with fresh data.
 
-- **Read** workbooks without Excel and without an SAP logon: data sources and their saved state, planning objects, crosstabs, SAP formulas, VBA macros, for one workbook or a whole folder. *(available)*
-- **Operate** workbooks through Excel and the AfO API on Windows: open a workbook or an ad-hoc query report logged on, with prompt values set and the data refreshed. *(available)* Filters, planning functions and saving plan data from outside Excel. *(planned; inside Excel the agent bridge does this)*
-- **Build** workbooks without Excel: data sources with stored prompts and axes, crosstabs, planning functions, VBA modules and button macros, on a layout template or a generated minimal layout. *(available)*
+Three parts, each usable on its own:
 
-## Tools
+- **Read** — a workbook or a whole folder, **without Excel and without an SAP logon**: data sources with their saved navigation state, variables, planning functions and sequences, crosstabs, SAP formulas, VBA macros and buttons, and the links between them that are broken.
+- **Build** — new workbooks from a JSON spec, or a new layout for an existing workbook that keeps every AfO feature, **without Excel**: data sources with stored prompts, crosstabs, planning functions, filter components, VBA and button macros, and the **agent bridge** that lets Claude in Excel plan inside the workbook.
+- **Operate** — on a Windows machine with Excel and AfO: open a workbook or an **ad-hoc report for any query**, logged on, with variables set and the data refreshed.
 
-| Tool | What it does |
-| --- | --- |
-| `afo_read_workbook` | Everything about one workbook: settings, sheets, data sources with filters, axes and hierarchies, planning functions and sequences with binding, aggregation level, filter, variable values and references, crosstabs and formula items with sheet and range, SAP cell formulas with parsed arguments, VBA modules with procedures and AfO API calls, buttons and the macros they run. Broken links are listed as issues. |
-| `afo_scan_workbooks` | Inventory of a folder: a profile per workbook, which query, planning function and variable is used in which workbooks, recurring layouts, and outliers (system, AfO version, unreadable files). |
-| `afo_where_used` | Every place a technical name occurs across a folder: data source, alias, planning object, aggregation level, filter, variable, characteristic, SAP formulas and VBA code. |
-| `afo_update_workbook` | Change an existing AfO workbook instead of rebuilding it: store prompt values (same workbook, other preset selection), add planning functions, retrofit the agent bridge, add VBA modules. Everything else stays as it is; the existing VBA project is patched, not replaced. |
-| `afo_build_workbook` | Write a new AfO workbook from a JSON spec onto a layout template (.xlsx/.xlsm with sheets, texts, formats and button shapes; an AfO workbook is accepted too, `"source"` uses the source workbook) or a generated minimal layout. Checks the spec first and reports every problem at once, then reads the result back and lists broken links. The facts a spec needs (variables, aggregation level characteristics, structure UIDs) come from the BW system, e.g. through bw-modeling-mcp. |
-| `afo_open_workbook` | Open a workbook in Excel on this machine for the user: logged on with the credentials configured for its system, prompt values set, data refreshed, saved on request. Excel stays open. Needs Windows, Excel and AfO. |
-| `afo_quick_report` | Ad-hoc report for one query: a plain .xlsx with the query in a crosstab and the prompt values stored, connected as the SAP Logon landscape describes the system (server, SAProuter, SNC), opened logged on with the data. |
+**Reading and building only touch files.** Nothing reaches a BW system until a workbook is opened in Excel with Analysis for Office — by the user, or by the operate tools on the user's own machine.
 
-## How it reads a workbook
+---
 
-An `.xlsx`/`.xlsm` file is a ZIP package. AfO stores its definition as a custom property of a hidden sheet: a UTF-16 XML document listing data providers, planning objects and items. Navigation state and variable values sit inside it as compressed blocks (base64, a 4-byte length, gzip). Sheets carry an AfO id (`<code name>|<guid>`) that items point to. Macros come from `xl/vbaProject.bin` (a compound file with MS-OVBA compressed module streams), buttons from the drawing parts.
+## 🆕 What's New — v0.1.0 · First release
 
-What a workbook does not contain: the query definition itself, and query variable values unless the workbook setting *StorePromptsInDocument* is on. Structure members appear as BW-internal IDs.
+**📖 Read workbooks without Excel**
 
-## Setup
+- `afo_read_workbook` — everything one workbook contains, with broken links listed as issues
+- `afo_scan_workbooks` and `afo_where_used` — inventory a folder, and find every workbook that
+  uses a query, variable or planning function before changing it
 
-Requires Node.js 22 or later.
+**🏗️ Build and change workbooks without Excel**
 
-```sh
+- `afo_build_workbook` — a workbook from a spec, on a layout template or a generated layout
+- A **new layout for an existing workbook**: data sources, crosstabs, planning objects, filter
+  components, connection and settings taken over verbatim from the source workbook (`source`
+  and `from`), VBA modules included — verified element by element on 30 real workbooks
+- `afo_update_workbook` — store variable values, add planning functions, retrofit the agent
+  bridge, add VBA modules, keeping everything else
+
+**🤖 Agentic planning with Claude in Excel**
+
+- The **agent bridge**: a command cell through which Claude in Excel writes plan values that AfO
+  accepts, runs planning functions, sets variables and filters, and saves — commands any agent
+  can learn from the help on the bridge sheet
+
+**🖥️ Open workbooks and ad-hoc reports logged on**
+
+- `afo_open_workbook` — open a workbook in Excel, logged on, variables set, data refreshed
+- `afo_quick_report` — an ad-hoc report for any query, connected the way SAP Logon connects
+- Logon per system from the server's environment or a secret runner; passwords never pass
+  through tool arguments
+
+The full history is in [CHANGELOG.md](CHANGELOG.md); later releases archive their notes in [WHATS_NEW.md](WHATS_NEW.md).
+
+---
+
+## What it can do
+
+Every tool in detail — parameters, behaviour, and how the tools combine — is in the **[Tools Reference](TOOLS.md)** (7 tools).
+
+| Area | Tool | Needs Excel and AfO |
+|---|---|---|
+| **Read** | `afo_read_workbook` — one workbook, completely | no |
+| | `afo_scan_workbooks` — a folder: profiles, usage across workbooks, outliers | no |
+| | `afo_where_used` — every place a technical name occurs across a folder | no |
+| **Build** | `afo_build_workbook` — a new workbook, or a new layout for an existing one | no |
+| | `afo_update_workbook` — change an existing workbook in place of rebuilding it | no |
+| **Operate** | `afo_open_workbook` — open a workbook logged on, with variables and fresh data | yes (Windows) |
+| | `afo_quick_report` — ad-hoc report for one query, opened logged on | yes (Windows) |
+
+### Agentic planning with Claude in Excel
+
+Claude in Excel writes cells through Office.js, and Analysis for Office does not register such writes as user input — a plan value typed by the agent is silently ignored. The **agent bridge** closes that gap. `afo_build_workbook` and `afo_update_workbook` add a bridge sheet with a command cell; the agent writes a command such as `SET Plan!E12=1500` or `PLAN PF_1` into it, and VBA in the workbook carries it out as a user would. AfO messages are logged after every step, and a rejected value fails the step.
+
+| Command | What it does |
+|---|---|
+| `SET Sheet!A1=value` | Write a value as user input |
+| `TRANSFER` | Send changed values to the server and check them |
+| `PLAN key` / `PVAR key NAME=value` | Run a planning function or sequence / set its variables |
+| `VAR DS NAME=value` / `FILTER DS DIM=value` | Set a query variable / filter a characteristic |
+| `REFRESH` · `SAVE` · `RESET` | Refresh, save plan data, discard unsaved plan data |
+| `API SAPFunction a\|b` | Any AfO API function (except the logon) |
+| your own words | Workbook commands that run the macro behind a button |
+
+Reading needs no command: the bridge sheet explains the AfO read formulas and keeps live lists of data sources, planning objects and messages.
+
+---
+
+## Combining with bw-modeling-mcp
+
+**afo-mcp works best alongside [bw-modeling-mcp](https://github.com/dnic-dev/bw-modeling-mcp)**, which reads and writes the BW side. The two divide the work cleanly:
+
+- A spec needs facts from BW — the variables of a query and their valid values, the characteristics of an aggregation level, the runtime UID of a key figure structure. bw-modeling-mcp delivers them (`bw_get_query`, `bw_get_filter_values`, `bw_get_aggregation_level`, `bw_query_data`); afo-mcp has no BW access of its own.
+- Workbooks stored in BW are fetched and saved by bw-modeling-mcp (`bw_list_afo_workbooks`, `bw_get_afo_workbook`, `bw_save_afo_workbook`) and read, changed or rebuilt here in between.
+- A planning model built with bw-modeling-mcp — aggregation level, planning functions, sequence — becomes a planning workbook here, with the agent bridge for Claude in Excel.
+
+---
+
+## Requirements
+
+- Node.js 22 or later
+- An MCP-compatible AI client (Claude Desktop, Claude Code, etc.)
+- For the operate tools only: Windows with Microsoft Excel and SAP Analysis for Office, and the systems in the SAP Logon landscape of that machine
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/dnic-dev/afo-mcp.git
+cd afo-mcp
 npm install
 npm run build
 npm test
 ```
 
-MCP client configuration (stdio):
+---
+
+## Configuration
+
+Reading and building need no configuration. The operate tools log on with credentials from the server's environment — never from tool arguments, so a password never appears in a conversation.
+
+| Variable | Description | Required |
+|---|---|---|
+| `AFO_LOGON_SYSTEMS` | JSON list of logons, one per system: `system`, `client`, `user`, optional `language`, and either `vault` (an entry of a secret runner) or nothing (password from this environment). `passwordVar` names the variable that holds the password (default `BW_PASSWORD`). | for operate |
+| `AFO_SECRET_COMMAND` | JSON array: command prefix of a secret runner that starts a command with the secrets of an entry in its environment; `{vault}` stands for the entry, e.g. `["op", "run", "--env-file", "{vault}.env", "--"]`. With it, the logon runs in a short-lived child process and the server itself never holds a password. | with `vault` |
+| `AFO_LOGON_SYSTEM`, `AFO_LOGON_CLIENT`, `AFO_LOGON_USER`, `AFO_LOGON_LANGUAGE`, `AFO_LOGON_PASSWORD_ENV` | The same for a single system; the password is read from `AFO_LOGON_PASSWORD` or the variable `AFO_LOGON_PASSWORD_ENV` names. | alternative |
+
+Server, system number, SAProuter and SNC name are not configured here: they come from the SAP Logon landscape of the machine (`%APPDATA%\SAP\Common\SAPUILandscape.xml`), so a workbook connects the way SAP Logon does.
+
+### Claude Desktop / Claude Code
 
 ```json
 {
   "mcpServers": {
-    "afo-mcp": { "command": "node", "args": ["C:/path/to/afo-mcp/dist/stdio.js"] }
+    "afo-mcp": {
+      "command": "node",
+      "args": ["/path/to/afo-mcp/dist/stdio.js"],
+      "env": {
+        "AFO_LOGON_SYSTEMS": "[{\"system\":\"ABC\",\"client\":\"100\",\"user\":\"YOUR_USER\",\"language\":\"EN\",\"vault\":\"abc\"}]",
+        "AFO_SECRET_COMMAND": "[\"op\", \"run\", \"--env-file\", \"C:/secrets/{vault}.env\", \"--\"]"
+      }
+    }
   }
 }
 ```
 
-Logon for the operate tools (environment of the server, never tool arguments):
+Claude Desktop reads `claude_desktop_config.json`, Claude Code `.mcp.json` in the project or home folder. Without the `env` block the read and build tools work as they are.
 
-```json
-"env": {
-  "AFO_LOGON_SYSTEMS": "[{\"system\":\"SYS\",\"client\":\"100\",\"user\":\"USER\",\"language\":\"EN\",\"vault\":\"entry@sys\",\"passwordVar\":\"BW_PASSWORD\"}]",
-  "AFO_VAULT_PYTHON": "C:/path/to/python.exe",
-  "AFO_VAULT_STARTER": "C:/path/to/vault-starter.py"
-}
-```
+---
 
-With `vault`, the logon runs in a child process started through a vault starter (`<python> -I <starter> run <entry> -- <command>`) that puts the entry's secrets into that child's environment only. Without `vault`, the password is read from the variable `passwordVar` of the server's environment. A workbook whose content Excel has disabled (security bar) refuses the logon until the user enables it; a trusted location avoids that, and ad-hoc reports are .xlsx without macros.
+## How it works
 
-## Status
+**An AfO workbook is an ordinary Excel file with a second, hidden document inside.** Analysis for Office keeps its definition — data sources, planning objects, crosstabs, settings — as UTF-16 XML in a custom property (`serializedData2`) of a very hidden sheet, `_com.sap.ip.bi.xl.hiddensheet`. Navigation states and variable values sit in compressed blocks inside that XML (base64 of a 4-byte length followed by gzip). Crosstabs and filter components are tied to cells through defined names, and SAP cell formulas are stored as `_xll.SAP…`.
 
-Reading and building are in place and tested against synthetic fixtures; built workbooks were checked in Excel with Analysis for Office. Opening workbooks and ad-hoc reports logged on works on Windows with Excel and AfO; more operate tools are next. The plan for agentic planning with Claude in Excel and the agent bridge is in [docs/ROADMAP.md](docs/ROADMAP.md).
+Reading unzips the file and parses that definition next to the sheets and the VBA project. Building writes the same structures; VBA projects are written per MS-OVBA, and existing ones are patched rather than replaced, so a workbook keeps its macros. The result opens in Excel like a workbook AfO saved itself.
+
+Operating needs Excel. The tools start Excel outside the server's process tree, attach to it through COM and drive Analysis for Office through its own API (`SAPLogon`, `SAPSetVariable`, `SAPExecuteCommand`, …) — the same calls a VBA macro would make.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the file format, the build pipeline, the agent bridge and the operate layer in detail.
+
+---
+
+## Roadmap
+
+The plan is in [docs/ROADMAP.md](docs/ROADMAP.md); open work is tracked as [issues](https://github.com/dnic-dev/afo-mcp/issues). Next up:
+
+- **Dialog guard** for the operate tools — report a prompt or message dialog instead of waiting on it
+- **More operate tools** on an open workbook — filters, reading crosstabs, planning functions and saving from outside Excel
+- **Describe, not only take over** — filters with hierarchy nodes, design rules and planning sequences in the spec
+- **The agent bridge as an Excel add-in** — every AfO workbook operable by an agent without changing it
+
+---
+
+## Contributing
+
+Issues and feature requests are welcome. The most useful contribution is to try it on your own workbooks and report what works, what doesn't, and what's missing. Real workbooks often hold customer data — please describe them with generic names rather than attaching them.
+
+---
+
+## License
+
+MIT

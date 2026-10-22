@@ -1,0 +1,34 @@
+# Changelog
+
+All notable changes to afo-mcp. The latest release highlights are in the [README](README.md#-whats-new--v010--first-release); earlier ones in [WHATS_NEW.md](WHATS_NEW.md).
+
+## [0.1.0] — unreleased
+
+The first version: reading, building and operating Analysis for Office workbooks.
+
+### Added — Read
+
+- **One workbook, completely** — `afo_read_workbook` reads the AfO definition from the hidden sheet without Excel or a logon: settings and connection, data sources with their stored navigation state (filters with hierarchy nodes and exclusions, axes, hierarchies, variable values), planning functions and sequences with data source, aggregation level, filter, variables and the cells variables are read from, crosstabs and formula items with their ranges, SAP cell formulas with parsed arguments, VBA modules with procedures and the AfO API calls in them, and buttons with their macros. Links that do not resolve come back as issues: an alias no data source has, a button whose macro is missing, a crosstab without its data source. `sections` limits the answer; structure members and filter values that appear as BW-internal ids are marked as such.
+- **A folder at once** — `afo_scan_workbooks` profiles every workbook of a folder and adds what reading them one by one does not give: which query, planning function and variable is used in which workbooks, recurring layouts (the same aliases bound to the same queries), and outliers (another system or AfO version than the majority, unreadable files, files without an AfO definition). Above 50 workbooks the answer is compact by default.
+- **Where a name is used** — `afo_where_used` finds every place a technical name occurs across a folder: query or InfoProvider, alias, planning function or sequence, aggregation level, planning filter, variable in prompts, planning objects, cell references and `SAPGetVariable`, characteristic in filters and axes, SAP formula arguments, and VBA code.
+
+### Added — Build
+
+- **Workbooks from a spec** — `afo_build_workbook` writes data sources with stored prompts, axes and input readiness, crosstabs, planning functions with aggregation level, fixed filter values, stored variables and variables read from cells, VBA modules, document modules for event handlers, and button macros. The base is a layout template, an existing AfO workbook, or a generated minimal layout. The spec is checked as a whole first and every problem is reported at once; the result is read back and broken links are returned.
+- **A new layout for an existing workbook** — with `source`, every entry with `from` is taken over verbatim from the source workbook: a data source with its whole stored state (filters incl. hierarchy nodes, display settings, design rules, exceptions, conditions, prompts), a crosstab with its settings, a planning function or sequence with variables, filter and references, a filter component with its formula. Keys may be renamed and references follow; the connection (SAProuter, SNC) and the workbook settings come from the source unless the spec sets them. Verified element by element on 30 real workbooks; the rebuilt workbooks open and refresh in Analysis for Office.
+- **VBA from the source** — standard and document modules taken over from the source workbook, with text replacements for moved cells or renamed keys.
+- **Cells, filter components and style set** — `cells` writes values and SAP formulas into the template (stored with the add-in prefix AfO expects), `formulaItems` adds filter components, `styleSetName` names the style set whose `SAP*` cell styles draw the crosstabs.
+- **Connection with SAProuter and SNC** — `system` takes `sapRouter`, `sncPartnerName` and `sncQuality`.
+- **Keep the data on save** — `removeDataOnSave: false` turns off AfO's *remove data before saving*, so a saved workbook shows its last result without a logon.
+- **Change instead of rebuild** — `afo_update_workbook` stores variable values (the workbook then opens in that selection without the prompt dialog), adds planning functions, retrofits the agent bridge and adds VBA modules, keeping layout, data sources, crosstabs and existing macros. The VBA project is patched, not replaced; existing `Workbook_Open` and `Workbook_SheetCalculate` handlers get one call added. A data source with *reset data source* gets it switched off, since AfO would drop the stored values on open.
+- **AfO workbooks as template** — a workbook AfO saved itself, such as one fetched from BW, is accepted as template: its definition is replaced, its sheets keep their AfO ids, and each sheet keeps a single `customProperties` element (#1).
+
+### Added — Agentic planning
+
+- **The agent bridge** — a bridge sheet with a command cell through which Claude in Excel works in an AfO workbook. Office.js writes raise no `Change` event, so Analysis for Office ignores values an agent writes into cells; the bridge turns a command into VBA that writes as a user does and calls the AfO API. Commands: `SET`, `TRANSFER`, `PLAN`, `PVAR`, `VAR`, `FILTER`, `REFRESH`, `SAVE`, `RESET`, `API` (any AfO API function except the logon) and workbook commands that run a macro. New AfO messages are logged after every step and an error fails it; a disabled `PlanDataTransfer` or `Reset` counts as nothing pending. The sheet carries the help with rules for agents and live lists of data sources, planning objects and messages, and is hidden by default.
+
+### Added — Operate
+
+- **Open a workbook logged on** — `afo_open_workbook` starts Excel outside the server's process tree, logs on with `SAPLogon`, refreshes once to initialise the data sources, sets variable values with `SAPSetVariable`, refreshes with them and saves on request. Excel stays open for the user. While Excel shows the security bar, Analysis for Office refuses the logon; the tool retries for a while so the user can enable the content.
+- **Ad-hoc reports** — `afo_quick_report` writes a plain `.xlsx` with one query in a crosstab and the variable values stored, connected as the SAP Logon landscape of the machine describes the system (server, system number, SAProuter, SNC name), and opens it logged on with the data. Without macros there is no security bar, so the logon runs without the user.
+- **Logon per system without passwords in the conversation** — `AFO_LOGON_SYSTEMS` lists one logon per system. With a secret runner (`AFO_SECRET_COMMAND`, any command that starts a process with the secrets of an entry in its environment) the logon runs in a short-lived child process and the server itself never holds a password; credentials never pass through tool arguments.
