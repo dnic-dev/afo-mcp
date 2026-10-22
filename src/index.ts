@@ -9,6 +9,7 @@ import { dirname, resolve } from 'node:path';
 import { type BuildSpec, type MinimalLayout, buildWorkbook } from './build/build.js';
 import { type UpdateOperations, updateWorkbook } from './build/update.js';
 import { type OpenPrompt, logonStatus, openWorkbook } from './operate/open.js';
+import { type QuickReportOptions, quickReport } from './operate/quick.js';
 import { SECTIONS, type Section, readWorkbook } from './workbook/read.js';
 import { scanWorkbooks, whereUsed } from './workbook/scan.js';
 
@@ -28,6 +29,10 @@ The tools unzip .xlsx/.xlsm files and parse or write the AfO definition Analysis
 - afo_open_workbook: open a workbook in Excel on this machine for the user, logged on, with prompt
   values set and the data refreshed (needs Windows, Excel and Analysis for Office). Logon data comes
   from this server's environment, never from arguments.
+- afo_quick_report: ad-hoc report for one query: a plain .xlsx with the query in a crosstab and the
+  prompt values stored, connected as in SAP Logon, opened logged on with the data. Take the query's
+  variables and valid values from the BW system first (bw-modeling-mcp: bw_get_query,
+  bw_get_filter_values); mandatory variables need a value or AfO shows the prompt dialog.
 
 Building: this server has no BW access. Take the facts a spec needs from the BW system first
 (bw-modeling-mcp): query variables and InfoProvider (bw_get_query), the characteristics of the
@@ -373,6 +378,30 @@ const TOOLS = [
       required: ['path'],
     },
   },
+  {
+    name: 'afo_quick_report',
+    description:
+      'Ad-hoc report for one BW query: writes a plain .xlsx (no macros, so no security bar) with the query in a crosstab and the given prompt values stored, connected the way the SAP Logon landscape of this machine connects to the system (server, SAProuter, SNC), and opens it in Excel logged on with the data (credentials of this server, as afo_open_workbook). Needs Windows, Excel and Analysis for Office. Give values for all mandatory variables (internal keys; bw_get_query lists the variables, bw_get_filter_values the valid keys), otherwise AfO shows the prompt dialog.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Technical name of the query.' },
+        system: { type: 'string', description: 'System id as in SAP Logon (default: the system the logon is configured for).' },
+        client: { type: 'string', description: 'Client (default: the configured logon client).' },
+        language: { type: 'string', description: 'Logon language (default: the configured one, else DE).' },
+        prompts: PROMPTS_SCHEMA,
+        axes: {
+          type: 'object',
+          description: 'Optional axis layout; characteristics by technical name. Omitted: the query default view.',
+          properties: { rows: { type: 'array', items: { type: 'string' } }, columns: { type: 'array', items: { type: 'string' } }, free: { type: 'array', items: { type: 'string' } } },
+        },
+        folder: { type: 'string', description: 'Folder for the workbook (default Documents\AfO Reports).' },
+        open: { type: 'boolean', description: 'Open it in Excel logged on (default true); false only writes the file.' },
+        timeoutSeconds: { type: 'number', description: 'Overall timeout for opening (default 900).' },
+      },
+      required: ['query'],
+    },
+  },
 ] as const;
 
 type Args = Record<string, unknown>;
@@ -385,6 +414,8 @@ function str(args: Args, key: string): string {
 
 function runTool(name: string, args: Args): unknown {
   switch (name) {
+    case 'afo_quick_report':
+      return quickReport({ ...(args as unknown as QuickReportOptions), query: str(args, 'query') });
     case 'afo_open_workbook':
       return openWorkbook({
         path: str(args, 'path'),

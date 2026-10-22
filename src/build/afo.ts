@@ -27,6 +27,12 @@ export interface AfoSystem {
   systemNumber?: string;
   /** The landscape entry's uuid. */
   uuid?: string;
+  /** SAProuter string, e.g. /H/router.example.com/S/3299. */
+  sapRouter?: string;
+  /** SNC partner name; with it AfO connects through SNC. */
+  sncPartnerName?: string;
+  /** SNC quality of protection (default 0 with a partner name, otherwise -1 = no SNC). */
+  sncQuality?: number;
 }
 
 /** A stored prompt value: a member (internal key), a literal, or an interval of members. */
@@ -173,7 +179,10 @@ function systemInfo(s: AfoSystem): string {
     + (s.server ? `<ServerGroup>${esc(s.server)}</ServerGroup>` : '')
     + `<Origin>USEREDIT</Origin>`
     + (s.systemNumber ? `<SystemNumber>${esc(s.systemNumber)}</SystemNumber>` : '')
-    + `<Client>${esc(s.client)}</Client><Language>${esc(s.language)}</Language><SncQuality>-1</SncQuality><SncNoSSO>True</SncNoSSO>`
+    + `<Client>${esc(s.client)}</Client><Language>${esc(s.language)}</Language>`
+    + (s.sapRouter ? `<SapRouter>${esc(s.sapRouter)}</SapRouter>` : '')
+    + (s.sncPartnerName ? `<SncPartnerName>${esc(s.sncPartnerName)}</SncPartnerName>` : '')
+    + `<SncQuality>${s.sncQuality ?? (s.sncPartnerName ? 0 : -1)}</SncQuality><SncNoSSO>True</SncNoSSO>`
     + (s.uuid ? `<Uuid>${esc(s.uuid)}</Uuid>` : '')
     + `</SystemInfo>`;
 }
