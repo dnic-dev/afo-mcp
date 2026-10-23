@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
@@ -569,4 +569,39 @@ test('updateWorkbook stores prompts in an existing workbook and changes nothing 
 
   assert.throws(() => updateWorkbook({ prompts: { DS_9: { V: 'X' }, DS_1: [{ name: 'V', member: 'A', literal: 'B' }] } }, { input, output: join(dir, 'bad.xlsx') }),
     (e) => /DS_9 is not in the workbook/.test(e.message) && /exactly one of member, literal or low/.test(e.message));
+}));
+
+test('updateWorkbook points every connection to another system, from the landscape or a reference workbook', () => withDir((dir) => {
+  const input = join(dir, 'dev.xlsx');
+  buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined }, { output: input });
+  const before = readSourceDefinition(input);
+  const n = count(before, /<SystemInfo>/g);
+  assert.ok(n >= 2, 'data source and planning function carry a connection');
+
+  mkdirSync(join(dir, 'SAP', 'Common'), { recursive: true });
+  writeFileSync(join(dir, 'SAP', 'Common', 'SAPUILandscape.xml'), `<Landscape><Services>
+    <Service type="SAPGUI" uuid="u-q" name="QAS - Quality" systemid="QAS" server="qas.example.com:3205" routerid="r-1"/>
+  </Services><Routers><Router uuid="r-1" name="R" router="/H/router.example.com/S/3299"/></Routers></Landscape>`);
+  const appData = process.env.APPDATA;
+  process.env.APPDATA = dir;
+  let r;
+  try {
+    r = updateWorkbook({ system: { systemId: 'qas' } }, { input, output: join(dir, 'qas.xlsx') });
+    assert.throws(() => updateWorkbook({ system: { systemId: 'NONE' } }, { input, output: join(dir, 'none.xlsx') }), /not in the SAP Logon landscape/);
+  } finally {
+    process.env.APPDATA = appData;
+  }
+  assert.match(r.changes.join(), /system SYS\/001 → QAS\/001 \(\d+ connections\)/);
+  const def = readSourceDefinition(r.output);
+  assert.equal(count(def, /<SystemInfo>/g), n);
+  assert.equal(count(def, /<SystemId>SYS<\/SystemId>/g), 0);
+  assert.equal(count(def, /<SapRouter>\/H\/router\.example\.com\/S\/3299<\/SapRouter>/g), n);
+  assert.match(def, /<\/AAO_Revision><SystemId>QAS<\/SystemId>/);
+  assert.match(def, /<Client>001<\/Client><Language>EN<\/Language>/, 'client and language kept');
+  assert.deepEqual(readWorkbook(r.output).issues, []);
+
+  // Back again, by copying the connection of the original workbook.
+  const back = updateWorkbook({ system: { from: input } }, { input: r.output, output: join(dir, 'back.xlsx') });
+  assert.equal(readSourceDefinition(back.output).match(/<SystemInfo>.*?<\/SystemInfo>/s)[0], before.match(/<SystemInfo>.*?<\/SystemInfo>/s)[0]);
+  assert.throws(() => updateWorkbook({ system: { from: join(dir, 'missing.xlsx') } }, { input, output: join(dir, 'x.xlsx') }), /does not exist/);
 }));

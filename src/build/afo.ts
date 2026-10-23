@@ -173,7 +173,7 @@ export function compressBlock(xml: string): string {
   return Buffer.concat([len, Buffer.from(gzipSync(raw))]).toString('base64');
 }
 
-function systemInfo(s: AfoSystem): string {
+export function systemInfo(s: AfoSystem): string {
   return `<SystemInfo><SystemId>${esc(s.systemId)}</SystemId><SystemName>${esc(s.systemName)}</SystemName><SystemDescription>${esc(s.systemName)}</SystemDescription>`
     + `<SystemType>BW_SYSTEM</SystemType><IsLocal>True</IsLocal><SsoEnabled>False</SsoEnabled><BoeID /><BoeID2>0</BoeID2><IsBoeDataSource>False</IsBoeDataSource>`
     + (s.server ? `<ServerGroup>${esc(s.server)}</ServerGroup>` : '')

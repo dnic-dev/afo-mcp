@@ -12,9 +12,10 @@ import { readWorkbook } from '../workbook/read.js';
 import {
   type AfoWorkbookSpec, CT_CP, CT_MACRO_MAIN, CT_VBA, CT_WS, type PlanningFunctionSpec, type PromptValue, REL_CP, REL_VBA, REL_WS,
   addRels, addVisibility, esc, guid, planningFunction, promptProblems, promptsVisibility, quoteSheet, relXml, stateXml, unstoredPrompts, utf16,
-  withStoredPrompts,
+  systemInfo, withStoredPrompts,
 } from './afo.js';
-import { firstElement, keyedElement, keyedElements } from './source.js';
+import { firstElement, keyedElement, keyedElements, readSourceDefinition, sourceSystemInfo } from './source.js';
+import { landscapeSystem } from '../operate/landscape.js';
 import {
   AGENT_MODULE, AGENT_NAMES, AGENT_SHEET_CODE_NAME, type AgentBridgeSpec, agentModuleCode, agentSheetName, agentSheetXml, validateAgentBridge,
 } from './agent.js';
@@ -35,7 +36,18 @@ export interface UpdateOperations {
   agentBridge?: AgentBridgeSpec;
   /** Standard modules to add, e.g. the macros behind new agent commands. */
   vbaModules?: Array<{ name: string; code?: string; file?: string }>;
+  /** Point every data source and planning object to another system. */
+  system?: SystemChange;
 }
+
+/**
+ * The target system: an entry of the SAP Logon landscape of this machine (client and language
+ * default to the workbook's), or the connection of a reference workbook.
+ */
+export type SystemChange = { systemId: string; client?: string; language?: string } | { from: string };
+
+const SYSTEM_INFO = /<SystemInfo>.*?<\/SystemInfo>/gs;
+const tag = (xml: string, name: string) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(xml)?.[1];
 
 export interface UpdateOptions {
   input: string;
@@ -107,8 +119,8 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   if (ext !== '.xlsm' && ext !== '.xlsx') throw new Error(`output must end in .xlsx or .xlsm, got ${options.output}.`);
   const prompts = Object.entries(ops.prompts ?? {}).map(([key, input]) => [key, normalizePrompts(input)] as const);
   const storePrompts = ops.storePrompts ?? (prompts.length ? true : undefined);
-  if (!prompts.length && storePrompts === undefined && !ops.planningFunctions?.length && !ops.agentBridge && !ops.vbaModules?.length) {
-    throw new Error('Nothing to do: give prompts, storePrompts, planningFunctions, agentBridge or vbaModules.');
+  if (!prompts.length && storePrompts === undefined && !ops.planningFunctions?.length && !ops.agentBridge && !ops.vbaModules?.length && !ops.system) {
+    throw new Error('Nothing to do: give prompts, storePrompts, planningFunctions, agentBridge, vbaModules or system.');
   }
 
   const d = readWorkbook(input, { sections: ['sheets', 'dataProviders', 'planningObjects', 'items', 'macros'] });
@@ -159,6 +171,30 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   }
   if (storePrompts === false && prompts.length) warnings.push('storePrompts is false: the prompt values are written, but AfO ignores them until StorePromptsInDocument is on.');
 
+  // Target system.
+  let newSystemInfo: string | undefined;
+  if (ops.system) {
+    const current = readSourceDefinition(input).match(SYSTEM_INFO)?.[0] ?? '';
+    if ('from' in ops.system) {
+      const ref = resolve(ops.system.from);
+      if (!existsSync(ref)) errors.push(`system.from: the reference workbook does not exist: ${ref}`);
+      else {
+        try { newSystemInfo = sourceSystemInfo(readSourceDefinition(ref)); } catch (err) { errors.push(`system.from: ${(err as Error).message}`); }
+        if (!newSystemInfo && !errors.length) errors.push(`system.from: no connection found in ${ref}.`);
+      }
+    } else if (typeof ops.system.systemId !== 'string' || !ops.system.systemId.trim()) {
+      errors.push('system: give systemId (as in SAP Logon) or from (a reference workbook).');
+    } else {
+      const client = ops.system.client ?? tag(current, 'Client');
+      if (!client) errors.push('system.client: the workbook has no client to keep; give one.');
+      else {
+        try {
+          newSystemInfo = systemInfo(landscapeSystem(ops.system.systemId.trim(), client, ops.system.language ?? tag(current, 'Language') ?? 'EN'));
+        } catch (err) { errors.push(`system: ${(err as Error).message}`); }
+      }
+    }
+  }
+
   // Agent bridge.
   const sheetNames = (d.sheets ?? []).map((s) => s.name);
   const specLike = {
@@ -187,7 +223,7 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   const targets = relTargets(wbRels);
 
   // --- The definition on the hidden sheet: prompts, settings, planning functions.
-  if (ops.planningFunctions?.length || prompts.length || storePrompts !== undefined) {
+  if (ops.planningFunctions?.length || prompts.length || storePrompts !== undefined || newSystemInfo) {
     const hidden = [...wb.matchAll(/<sheet [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)].find((m) => m[1] === HIDDEN_SHEET);
     if (!hidden) throw new Error('The AfO definition sheet was not found.');
     const sheetPart = resolvePart('xl/workbook.xml', targets.get(hidden[2])!);
@@ -221,6 +257,16 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
     if (storePrompts !== undefined) {
       def = setSetting(def, 'StorePromptsInDocument', storePrompts);
       changes.push(`StorePromptsInDocument ${storePrompts ? 'on' : 'off'}`);
+    }
+    if (newSystemInfo) {
+      // Every connection (data sources, planning objects, planning design time) and the workbook's system id.
+      const before = [...new Set((def.match(SYSTEM_INFO) ?? []).map((s) => `${tag(s, 'SystemId')}/${tag(s, 'Client')}`))];
+      const count = (def.match(SYSTEM_INFO) ?? []).length;
+      const target = newSystemInfo;
+      const id = tag(target, 'SystemId') ?? '';
+      def = def.replace(SYSTEM_INFO, () => target).replace(/(<\/AAO_Revision>)<SystemId>[^<]*<\/SystemId>/, (_, m) => `${m}<SystemId>${esc(id)}</SystemId>`);
+      changes.push(`system ${before.join(', ') || '?'} → ${id}/${tag(target, 'Client')} (${count} connections)`);
+      warnings.push(`The queries, planning objects and stored variable values must exist in ${id} as well; check them there (bw-modeling-mcp) before handing the workbook out.`);
     }
 
     const xml = (ops.planningFunctions ?? []).map((pf) => {

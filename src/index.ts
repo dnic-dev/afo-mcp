@@ -345,6 +345,16 @@ const TOOLS = [
         planningFunctions: PLANNING_FUNCTIONS_SCHEMA,
         agentBridge: AGENT_BRIDGE_SCHEMA,
         vbaModules: VBA_MODULES_SCHEMA,
+        system: {
+          type: 'object',
+          description: 'Point the workbook to another system, e.g. from development to quality or production, or after a system move: every data source and planning object gets the new connection. Either systemId (an entry of the SAP Logon landscape of this machine: server, system number, SAProuter and SNC as there; client and language default to the workbook\'s) or from (copy the connection of a reference workbook).',
+          properties: {
+            systemId: { type: 'string', description: 'System id as in SAP Logon.' },
+            client: { type: 'string' },
+            language: { type: 'string' },
+            from: { type: 'string', description: 'Absolute path of a workbook whose connection to take.' },
+          },
+        },
         base_dir: { type: 'string', description: 'Folder that relative VBA module files resolve against.' },
         overwrite: { type: 'boolean', description: 'Replace an existing output file (default false).' },
       },
@@ -479,6 +489,7 @@ function runTool(name: string, args: Args): unknown {
           planningFunctions: args.planningFunctions as UpdateOperations['planningFunctions'],
           agentBridge: args.agentBridge as UpdateOperations['agentBridge'],
           vbaModules: args.vbaModules as UpdateOperations['vbaModules'],
+          system: typeof args.system === 'object' && args.system !== null ? (args.system as UpdateOperations['system']) : undefined,
         },
         {
           input: str(args, 'input'),
