@@ -84,7 +84,7 @@ public static class AfoXl {
       d.text = text; d.buttons = buttons.ToArray();
       var probe = (d.title + " " + uiaClass).ToLowerInvariant();
       if (progress) continue;
-      if (probe.Contains("prompt") || probe.Contains("variable")) d.kind = "prompts";
+      if (probe.Contains("prompt") || probe.Contains("variable") || probe.Contains("eingabeaufforderung")) d.kind = "prompts";
       else if (probe.Contains("logon") || probe.Contains("log on") || probe.Contains("anmeld")) d.kind = "logon";
       else d.kind = "message";
       r.Add(d);
