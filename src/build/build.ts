@@ -6,7 +6,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, isAbsolute, resolve } from 'node:path';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readWorkbook } from '../workbook/read.js';
-import { type AfoWorkbookSpec, fromA1, makeAfoWorkbook, promptProblems } from './afo.js';
+import { type AfoWorkbookSpec, filterProblems, fromA1, makeAfoWorkbook, promptProblems } from './afo.js';
 import { agentSheetName, validateAgentBridge } from './agent.js';
 import { applySource, readSourceDefinition } from './source.js';
 
@@ -120,6 +120,9 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
     if (dp?.from && !s.source) errors.push(`${what}: from needs a source workbook (source).`);
     if (!dp?.from && (typeof dp?.query !== 'string' || !dp.query.trim())) errors.push(`${what}: query is required.`);
     (dp?.prompts ?? []).forEach((p, j) => errors.push(...promptProblems(p, `${what}.prompts[${j}]`)));
+    if (dp?.filters !== undefined && !Array.isArray(dp.filters)) errors.push(`${what}.filters must be a list.`);
+    else if (dp?.filters?.length && dp.from) errors.push(`${what}: filters and from do not combine; the data source taken over keeps its own filters.`);
+    else (dp?.filters ?? []).forEach((f, j) => errors.push(...filterProblems(f, `${what}.filters[${j}]`)));
     for (const axis of ['rows', 'columns', 'free'] as const) {
       const v = dp?.axes?.[axis];
       if (v !== undefined && !Array.isArray(v)) errors.push(`${what}.axes.${axis} must be a list of names.`);

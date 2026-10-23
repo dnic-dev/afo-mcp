@@ -63,6 +63,19 @@ export interface DataProviderSpec {
    * runtime UID (as the reporting metadata reports it). Omitted axes keep the query default.
    */
   axes?: { rows?: string[]; columns?: string[]; free?: string[] };
+  /** Stored filters on characteristics, internal keys; several entries for one characteristic combine. */
+  filters?: FilterSpec[];
+}
+
+/** A filter on one characteristic: members, an interval, or a comparison, included or excluded. */
+export interface FilterSpec {
+  characteristic: string;
+  members?: string[];
+  low?: string;
+  high?: string;
+  operator?: 'GREATER' | 'GREATER_EQUAL' | 'LESS' | 'LESS_EQUAL';
+  value?: string;
+  exclude?: boolean;
 }
 
 export interface GridSpec {
@@ -361,6 +374,44 @@ export function promptProblems(p: Partial<PromptValue> | undefined, what: string
   return errors;
 }
 
+const FILTER_OPERATORS = ['GREATER', 'GREATER_EQUAL', 'LESS', 'LESS_EQUAL'];
+
+export function filterProblems(f: Partial<FilterSpec> | undefined, what: string): string[] {
+  const errors: string[] = [];
+  if (!f?.characteristic) errors.push(`${what}: characteristic is required.`);
+  const kinds = [f?.members !== undefined, f?.low !== undefined, f?.value !== undefined].filter(Boolean).length;
+  if (kinds !== 1) errors.push(`${what} (${f?.characteristic}): give exactly one of members, low (with high) or operator with value.`);
+  if (f?.members !== undefined && (!Array.isArray(f.members) || !f.members.length)) errors.push(`${what} (${f?.characteristic}): members must be a non-empty list.`);
+  if (f?.high !== undefined && f?.low === undefined) errors.push(`${what} (${f?.characteristic}): high without low.`);
+  if ((f?.value !== undefined) !== (f?.operator !== undefined)) errors.push(`${what} (${f?.characteristic}): operator and value go together.`);
+  if (f?.operator !== undefined && !FILTER_OPERATORS.includes(f.operator)) errors.push(`${what} (${f?.characteristic}): operator must be one of ${FILTER_OPERATORS.join(', ')}.`);
+  return errors;
+}
+
+/** The SELECTION_STATE block of a navigation state with the given filters, in the form AfO writes it. */
+function filtersXml(filters: FilterSpec[] | undefined): string {
+  if (!filters?.length) return '';
+  const member = (name: string) => `<MEMBER name="${esc(name)}" type="MEMBER" />`;
+  const byChar = new Map<string, string[]>();
+  for (const f of filters) {
+    const sign = `<SIGN>${f.exclude ? 'EXCLUDING' : 'INCLUDING'}</SIGN>`;
+    let sel: string[];
+    if (f.members) {
+      sel = f.members.map((m) => f.exclude
+        ? `<SELECTION type="RANGE" operator="EQUAL">${sign}<VALUE>${member(m)}</VALUE></SELECTION>`
+        : `<SELECTION type="SINGLE_MEMBER">${member(m)}</SELECTION>`);
+    } else if (f.low !== undefined) {
+      sel = [`<SELECTION type="RANGE" operator="BETWEEN">${sign}<LOW_VALUE>${member(f.low)}</LOW_VALUE><HIGH_VALUE>${member(f.high ?? f.low)}</HIGH_VALUE></SELECTION>`];
+    } else {
+      sel = [`<SELECTION type="RANGE" operator="${f.operator}">${sign}<VALUE>${member(f.value ?? '')}</VALUE></SELECTION>`];
+    }
+    byChar.set(f.characteristic, [...(byChar.get(f.characteristic) ?? []), ...sel]);
+  }
+  return `<SELECTION_SPACE_SORTING type="DEFAULT" /><SELECTION_STATE_SORTING type="DEFAULT" /><SELECTION_STATE><SELECTION type="CARTESIAN_PRODUCT"><CHARACTERISTICS>`
+    + [...byChar].map(([c, sel]) => `<CHARACTERISTIC name="${esc(c)}"><SELECTIONS>${sel.join('')}</SELECTIONS></CHARACTERISTIC>`).join('')
+    + `</CHARACTERISTICS></SELECTION></SELECTION_STATE>`;
+}
+
 /** The AXES block of a navigation state, in the form AfO writes it. */
 function axesXml(axes: DataProviderSpec['axes']): string {
   if (!axes) return '';
@@ -381,6 +432,7 @@ export function stateXml(dp: DataProviderSpec, day: string): string {
     + (dp.infoProvider ? `<INFO_PROVIDER name="${esc(dp.infoProvider)}" />` : '')
     + `<QUERY name="${esc(dp.query)}"><DUE_DATE>${day}</DUE_DATE></QUERY>`
     + (dp.prompts?.length ? `<VARIABLES>${dp.prompts.map(promptXml).join('')}</VARIABLES>` : '')
+    + filtersXml(dp.filters)
     + (dp.inputReady ?? true ? '<IS_INPUT_ENABLED>true</IS_INPUT_ENABLED>' : '')
     + axesXml(dp.axes)
     + `<DOCUMENT_APPLICATION_ASSIGNED /></BICS_VIEW>`;

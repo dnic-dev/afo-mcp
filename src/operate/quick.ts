@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { PromptValue } from '../build/afo.js';
+import type { FilterSpec, PromptValue } from '../build/afo.js';
 import { buildWorkbook } from '../build/build.js';
 import { landscapeSystem } from './landscape.js';
 import { logonConfig, openWorkbook } from './open.js';
@@ -18,6 +18,7 @@ export interface QuickReportOptions {
   language?: string;
   prompts?: PromptValue[];
   axes?: { rows?: string[]; columns?: string[]; free?: string[] };
+  filters?: FilterSpec[];
   /** Folder for the workbook (default Documents\AfO Reports). */
   folder?: string;
   /** Open in Excel, logged on (default true). */
@@ -46,7 +47,7 @@ export async function quickReport(o: QuickReportOptions, env: NodeJS.ProcessEnv 
     system,
     storePrompts: true,
     refreshOnOpen: false,
-    dataProviders: [{ key: 'DS_1', query: o.query, prompts: prompts.length ? prompts : undefined, axes: o.axes }],
+    dataProviders: [{ key: 'DS_1', query: o.query, prompts: prompts.length ? prompts : undefined, axes: o.axes, filters: o.filters?.length ? o.filters : undefined }],
     grids: [{ key: 'Crosstab1', dataProviderKey: 'DS_1', sheet: 'Report', cell: 'B4' }],
   }, {
     output,

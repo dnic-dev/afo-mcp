@@ -605,3 +605,32 @@ test('updateWorkbook points every connection to another system, from the landsca
   assert.equal(readSourceDefinition(back.output).match(/<SystemInfo>.*?<\/SystemInfo>/s)[0], before.match(/<SystemInfo>.*?<\/SystemInfo>/s)[0]);
   assert.throws(() => updateWorkbook({ system: { from: join(dir, 'missing.xlsx') } }, { input, output: join(dir, 'x.xlsx') }), /does not exist/);
 }));
+
+test('stored filters: members, intervals, comparisons and exclusions read back as written', () => withDir((dir) => {
+  const output = join(dir, 'filtered.xlsx');
+  buildWorkbook({
+    ...MINIMAL_SPEC, vbaModules: undefined, planningFunctions: undefined,
+    dataProviders: [{
+      key: 'DS_1', query: 'QUERY_NAME',
+      filters: [
+        { characteristic: 'CHAR_A', members: ['A1', 'A2'] },
+        { characteristic: 'CHAR_A', members: ['A9'], exclude: true },
+        { characteristic: 'CHAR_MONTH', low: '202601', high: '202606' },
+        { characteristic: 'CHAR_YEAR', operator: 'GREATER_EQUAL', value: '2025' },
+      ],
+    }],
+  }, { output });
+  const dp = readWorkbook(output).dataProviders[0];
+  assert.deepEqual(dp.state.filters, [
+    { characteristic: 'CHAR_A', selections: ['A1', 'A2', 'not A9'] },
+    { characteristic: 'CHAR_MONTH', selections: ['202601 .. 202606'] },
+    { characteristic: 'CHAR_YEAR', selections: ['>= 2025'] },
+  ]);
+  assert.throws(() => validateSpecOrThrow({ ...MINIMAL_SPEC, dataProviders: [{ key: 'DS_1', query: 'Q', filters: [{ characteristic: 'C', members: ['X'], low: '1' }, { characteristic: 'D', operator: 'GREATER' }] }] }),
+    (e) => /exactly one of members/.test(e.message) && /operator and value go together/.test(e.message));
+}));
+
+function validateSpecOrThrow(spec) {
+  const errors = validateSpec(spec);
+  if (errors.length) throw new Error(errors.join('\n'));
+}

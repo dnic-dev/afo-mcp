@@ -161,9 +161,12 @@ on it built with afo-mcp, to prove the bridge generic case by case:
       (SAProuter/SNC) and settings; keys may be renamed, positions are new. Round trip over 30 real
       workbooks identical element by element; rebuilt workbooks recognised by AfO.
 - [x] Formula items (filter components) in the spec; the builder writes their formula into the cell.
-- [ ] Describe in the spec (for workbooks designed from scratch): filters incl. hierarchy nodes,
-      ranges and exclusions; design rules; display per characteristic; planning function filter
-      references; system connection with SAProuter/SNC.
+- [x] Filters in the spec: members, intervals, comparisons, exclusions (`filters` on a data
+      source, also in `afo_quick_report`). *(Live: AfO takes members and exclusions over as
+      effective filters.)*
+- [ ] Describe in the spec (for workbooks designed from scratch): filters on hierarchy nodes
+      (need the hierarchy on the characteristic); design rules; display per characteristic;
+      planning function filter references.
 
 ### D2. Workbooks stored in BW (in bw-modeling-mcp, using the afo-mcp parser as a library)
 

@@ -72,6 +72,24 @@ const PROMPTS_SCHEMA = {
   },
 } as const;
 
+const FILTERS_SCHEMA = {
+  type: 'array',
+  description: 'Stored filters, internal keys (bw_get_filter_values: CHAVL_INT). Each entry has exactly one of members, low(+high) or operator+value; exclude turns it into an exclusion. Several entries for one characteristic combine.',
+  items: {
+    type: 'object',
+    properties: {
+      characteristic: { type: 'string', description: 'Technical name of the characteristic.' },
+      members: { type: 'array', items: { type: 'string' }, description: 'Single members.' },
+      low: { type: 'string', description: 'Interval start.' },
+      high: { type: 'string', description: 'Interval end.' },
+      operator: { type: 'string', enum: ['GREATER', 'GREATER_EQUAL', 'LESS', 'LESS_EQUAL'] },
+      value: { type: 'string', description: 'Value compared with operator.' },
+      exclude: { type: 'boolean', description: 'Exclude instead of include.' },
+    },
+    required: ['characteristic'],
+  },
+} as const;
+
 const PLANNING_FUNCTIONS_SCHEMA = {
               type: 'array',
               items: {
@@ -265,6 +283,7 @@ const TOOLS = [
                       free: { type: 'array', items: { type: 'string' } },
                     },
                   },
+                  filters: FILTERS_SCHEMA,
                 },
                 required: ['key'],
               },
@@ -410,6 +429,7 @@ const TOOLS = [
           description: 'Optional axis layout; characteristics by technical name. Omitted: the query default view.',
           properties: { rows: { type: 'array', items: { type: 'string' } }, columns: { type: 'array', items: { type: 'string' } }, free: { type: 'array', items: { type: 'string' } } },
         },
+        filters: FILTERS_SCHEMA,
         folder: { type: 'string', description: 'Folder for the workbook (default Documents\AfO Reports).' },
         open: { type: 'boolean', description: 'Open it in Excel logged on (default true); false only writes the file.' },
         timeoutSeconds: { type: 'number', description: 'Overall timeout for opening (default 900).' },

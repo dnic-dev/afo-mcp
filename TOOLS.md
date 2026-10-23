@@ -78,7 +78,7 @@ Write a new workbook from a spec — on a layout template, on an existing AfO wo
 
 | Spec field | |
 |---|---|
-| `dataProviders` | Alias, query, InfoProvider, input readiness, stored `prompts` (internal format; `member`, `literal` or `low`/`high`) and `axes` (characteristics by name, a key figure structure by its runtime UID) |
+| `dataProviders` | Alias, query, InfoProvider, input readiness, stored `prompts` (internal format; `member`, `literal` or `low`/`high`) `axes` (characteristics by name, a key figure structure by its runtime UID) and `filters` (per characteristic: `members`, `low`/`high` or `operator` + `value`, optionally `exclude`; internal keys) |
 | `grids` | Crosstabs: data source, sheet, top-left cell. AfO does not move crosstabs apart — leave room for the rows each one grows to |
 | `planningFunctions` | Planning function or sequence: alias, data source, aggregation level, its characteristics, fixed filter values, stored variables, variables read from cells |
 | `formulaItems` | Filter components and other formula items; the formula is written into the cell as well |
@@ -146,6 +146,7 @@ An ad-hoc report for one query: a plain `.xlsx` with the query in a crosstab and
 | `system`, `client`, `language` | Default: the configured logon (when exactly one system is configured) |
 | `prompts` | Variable values, internal format (`member`, `literal`, `low`/`high`) |
 | `axes` | Optional layout: rows, columns, free characteristics |
+| `filters` | Optional stored filters, as in `afo_build_workbook` |
 | `folder` | Where the file goes (default `Documents\AfO Reports`) |
 | `open` | `false` writes the file only |
 
