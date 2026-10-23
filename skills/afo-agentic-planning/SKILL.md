@@ -27,6 +27,14 @@ Look for the defined name `AfoAgentCommand`, including on hidden sheets.
   "preview": the workbook would look planned while SAP keeps the old values. Tell the user that
   planning from Claude needs the agent bridge in this workbook.
 
+Rules that hold in every workbook, whatever the bridge sheet adds:
+
+- Ask before acting when a request matches several members, rows or versions.
+- Change input-ready cells only; for changes across many cells, prefer a planning function.
+- After a change, recalculate and read the values back: AfO drops some input silently (text in a
+  number cell, values outside a data slice or characteristic relationship).
+- Never `SAVE` or `RESET` without the user's explicit yes for that step.
+
 ## 2. Understand the workbook
 
 AfO read functions are worksheet formulas, evaluated by AfO whoever writes them. Write them into

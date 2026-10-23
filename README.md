@@ -76,6 +76,8 @@ Claude in Excel writes cells through Office.js, and Analysis for Office does not
 
 Reading needs no command: the bridge sheet explains the AfO read formulas and keeps live lists of data sources, planning objects and messages.
 
+**The skill for Claude in Excel.** [`skills/afo-agentic-planning`](skills/afo-agentic-planning/SKILL.md) tells Claude in Excel how to recognise an AfO workbook, find the bridge, read the workbook's queries and planning objects through AfO formulas, and when to ask before acting. Claude in Excel uses the skills of the claude.ai account it is signed in with: add the folder there as a skill.
+
 ---
 
 ## Combining with bw-modeling-mcp
