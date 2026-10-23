@@ -44,6 +44,7 @@ src/
     agent.ts         the agent bridge: sheet, help, VBA
     update.ts        afo_update_workbook
   operate/           Excel on the local machine
+    excel.ts         shared PowerShell: attach, AfO API with retries, progress, dialog check
     open.ts          afo_open_workbook: Excel start, logon, prompts, refresh, save
     quick.ts         afo_quick_report
     landscape.ts     the SAP Logon landscape: connection of a system
@@ -184,7 +185,17 @@ The operate tools run a PowerShell script per call; the server itself never load
 5. **Refresh, variables, refresh.** The first refresh initialises the data sources —
    `SAPSetVariable` returns 0 before it. Variables are then set with refresh behaviour off and
    applied in one refresh.
-6. **Report.** Variable values, used ranges, AfO messages and visible dialogs come back as JSON.
+6. **Report.** Variable values, used ranges and AfO messages come back as JSON.
+
+**Dialogs.** A COM call into Excel does not return while Excel or AfO shows a modal dialog, and a
+script waiting on it would run into its timeout. The script therefore reports every step as a
+progress line on stdout. When no step follows for 20 seconds, the server runs a short second script
+that lists the visible dialog windows of the Excel process (`#32770`, `bosa_sdm_XL9`, `NUIDialog`,
+WinForms, WPF) and describes them through UI Automation: title, texts, buttons, and a kind
+(`prompts`, `logon`, `message`; windows with a progress bar do not count). If there is one, the
+server stops its own script (the process tree of the script; Excel, started through WMI, is not
+part of it) and returns the dialog. Excel and the dialog stay as they are for the user: nothing is
+clicked. Without a dialog the step is just slow, and the call keeps waiting.
 
 **The connection of an ad-hoc report** comes from the SAP Logon landscape of the machine
 (`SAPUILandscape.xml` and the global landscape next to it): server and system number from the

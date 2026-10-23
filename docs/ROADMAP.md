@@ -84,7 +84,7 @@ to cover what a planner can do in AfO with keyboard and mouse.
 - [x] **`PVAR key NAME=value`:** *(implemented; variables read from cells are rejected by AfO and
       set through their cell instead; test with free variables in the parcours)* variables of planning functions and sequences
       (`SAPSetPlanParameter`).
-- [ ] **Dialog guard:** no command may hang on a dialog (prompt dialog on refresh, message
+- [ ] **Dialog guard in the bridge (VBA):** no command may hang on a dialog (prompt dialog on refresh, message
       dialog, confirmations). Prompts: require `VAR` first or detect and report. Messages: through
       `SAPListOfMessages`; check whether the `BeforeMessageDisplay` callback with
       `SAPSuppressMessage` is needed.
@@ -204,9 +204,15 @@ the afo-mcp parser. Tracked as issues in the bw-modelling-skills repository.
       through a vault starter), prompt values, refresh, save. Excel runs outside the server.
 - [x] `afo_quick_report`: ad-hoc .xlsx for one query, connection from the SAP Logon landscape,
       opened logged on with the data.
-- [ ] Further tools on the open session (`afo_set_variables`, `afo_read_crosstab`,
-      `afo_execute_planning`, `afo_save_plan` / `afo_reset_plan`, `afo_messages`), with a dialog
-      watcher. Needed to run the parcours unattended.
+- [x] Dialog check for the open tools: when Excel waits on a dialog, the call stops and reports
+      it; the dialog stays open for the user. *(Live: message dialog reported after the stall
+      time, left open in Excel.)*
+- [ ] ~~Tools on the open session~~ (set variables and filters, run planning, save) — dropped: at
+      run time the planner works through Claude in Excel and the bridge; whether a workbook works
+      is a matter of the build (spec validation, read-back) and of the parcours (C) as our own proof.
+- [x] `afo_update_workbook` `system`: point a workbook to another system (landscape entry or
+      reference workbook). *(Rewriting an AfO-saved workbook to its own landscape entry gives the
+      identical connection.)*
 
 ### H. Central hosting (later)
 

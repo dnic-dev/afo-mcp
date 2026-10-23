@@ -33,6 +33,8 @@ The tools unzip .xlsx/.xlsm files and parse or write the AfO definition Analysis
   prompt values stored, connected as in SAP Logon, opened logged on with the data. Take the query's
   variables and valid values from the BW system first (bw-modeling-mcp: bw_get_query,
   bw_get_filter_values); mandatory variables need a value or AfO shows the prompt dialog.
+  When Excel waits on a dialog (prompt dialog for a variable without value, AfO logon, message
+  box), the two open tools stop and report it; the dialog stays open for the user.
 
 Building: this server has no BW access. Take the facts a spec needs from the BW system first
 (bw-modeling-mcp): query variables and InfoProvider (bw_get_query), the characteristics of the
@@ -364,7 +366,7 @@ const TOOLS = [
   {
     name: 'afo_open_workbook',
     description:
-      'Open an Analysis for Office workbook in Excel on this machine so the user sees the data at once: starts Excel (it stays open for the user), logs on with the credentials configured for this server (AFO_LOGON_* environment; only for the workbook system they are configured for, never passed as arguments), sets prompt values with SAPSetVariable, refreshes, and saves on request. Needs Windows, Excel and Analysis for Office. A workbook with "refresh on open" may show the AfO logon dialog itself before the logon can be scripted. Returns the steps, the variable values after the refresh, used ranges per sheet, AfO messages and open dialogs.',
+      'Open an Analysis for Office workbook in Excel on this machine so the user sees the data at once: starts Excel (it stays open for the user), logs on with the credentials configured for this server (AFO_LOGON_* environment; only for the workbook system they are configured for, never passed as arguments), sets prompt values with SAPSetVariable, refreshes, and saves on request. Needs Windows, Excel and Analysis for Office. When Excel waits on a dialog (prompt dialog for a mandatory variable without value, AfO logon of a workbook with "refresh on open", a message box), the call stops with ok=false and the title and text of the dialog, which stays open for the user. Returns the Excel process id, the steps, the variable values after the refresh, used ranges per sheet and AfO messages.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -109,8 +109,9 @@ Change an existing workbook instead of rebuilding it. Layout, cells, data source
 | `planningFunctions` | Planning functions bound to a data source already in the workbook |
 | `agentBridge` | Retrofit the agent bridge |
 | `vbaModules` | Additional standard modules |
+| `system` | Point the workbook to another system — development to quality to production, or after a system move. `{ "systemId": "QAS" }` takes server, system number, SAProuter and SNC from the SAP Logon landscape of the machine (client and language stay unless given); `{ "from": "<workbook>" }` copies the connection of a reference workbook. Every data source and planning object gets the new connection |
 
-Warnings name variables that still have no stored value. Signed VBA projects are refused.
+Warnings name variables that still have no stored value, and remind that queries, planning objects and variable values must exist in a new target system. Signed VBA projects are refused.
 
 ---
 
@@ -130,7 +131,9 @@ Open a workbook so the user sees the data at once: start Excel, log on, refresh 
 | `logonWaitSeconds` | How long to retry the logon while Excel shows the security bar (default 90) |
 | `timeoutSeconds` | Overall timeout (default 900) |
 
-Returns the steps, the logon result, variable values after the refresh, used ranges per sheet, AfO messages and open dialogs.
+Returns the Excel process id, the steps, the logon result, variable values after the refresh, used ranges per sheet and AfO messages.
+
+**Dialogs.** When Excel or AfO waits on a dialog — the prompt dialog for a mandatory variable without value, the AfO logon of a workbook with *refresh on open*, a message box, a repair or file-in-use prompt — the call stops after about 20 seconds without progress and returns `ok: false` with the title, text and buttons of the dialog. The dialog stays open in Excel for the user; nothing is clicked. The steps after it did not run.
 
 **Security bar.** For a macro workbook outside a trusted location, Excel disables the content until the user clicks *Enable Content*, and Analysis for Office refuses the logon until then. The tool keeps retrying for `logonWaitSeconds`; tell the user beforehand, or keep such workbooks in a trusted location.
 

@@ -157,8 +157,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the file format, the build pipeline, 
 
 The plan is in [docs/ROADMAP.md](docs/ROADMAP.md); open work is tracked as [issues](https://github.com/dnic-dev/afo-mcp/issues). Next up:
 
-- **Dialog guard** for the operate tools — report a prompt or message dialog instead of waiting on it
-- **More operate tools** on an open workbook — filters, reading crosstabs, planning functions and saving from outside Excel
+- **Planning parcours** — hierarchies, data slices, characteristic relationships, sequences and new lines, tested end to end
 - **Describe, not only take over** — filters with hierarchy nodes, design rules and planning sequences in the spec
 - **The agent bridge as an Excel add-in** — every AfO workbook operable by an agent without changing it
 

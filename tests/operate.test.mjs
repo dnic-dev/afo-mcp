@@ -57,3 +57,11 @@ test('landscape: server, system number, SAProuter and SNC name', () => {
   assert.equal(o.sncPartnerName, undefined);
   assert.throws(() => landscapeSystem('NONE', '1', 'EN', [file]), /not in the SAP Logon landscape/);
 });
+
+test('operate script: steps are reported as progress lines for the dialog check', async () => {
+  const { PS_PREAMBLE, describeDialog } = await import('../dist/operate/excel.js');
+  assert.match(PS_PREAMBLE, /function Step/);
+  assert.match(PS_PREAMBLE, /Emit "step/);
+  assert.doesNotMatch(PS_PREAMBLE, /Invoke\(\)|WM_CLOSE|PostMessage/, 'nothing is clicked or closed');
+  assert.equal(describeDialog({ kind: 'prompts', title: 'Prompts', text: 'Version', buttons: [] }), 'prompts dialog "Prompts": Version');
+});
