@@ -129,9 +129,15 @@ try {
       if ($res -eq 1 -or (Get-Date) -ge $end) { break }
       Start-Sleep -Seconds 3
     }
-    $secret = $null
     $out.logon = $res
-    if ($res -ne 1) { throw "SAPLogon returned $res. If Excel shows the security bar, the workbook's content is disabled and AfO refuses the logon: click Enable Content (or open the workbook from a trusted location) and call again." }
+    if ($res -ne 1) { $secret = $null; throw "SAPLogon returned $res. If Excel shows the security bar, the workbook's content is disabled and AfO refuses the logon: click Enable Content (or open the workbook from a trusted location) and call again." }
+    # A data source with a connection of its own asks again on the first refresh: log on each one
+    # that is not connected yet.
+    foreach ($d in @($a.dataProviders | Select-Object -Skip 1)) {
+      $c = Retry { $xl.Run('SAPGetProperty', 'IsConnected', $d) }
+      if ("$c" -ne 'True' -and "$c" -ne '1') { [void](Retry { $xl.Run('SAPLogon', $d, $a.client, $a.user, $secret) }) }
+    }
+    $secret = $null
     Step 'logged on'
   }
   # The first refresh initialises the data sources; variables can only be set after it.
