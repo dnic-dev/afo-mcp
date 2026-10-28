@@ -299,6 +299,7 @@ const TOOLS = [
                   dataProviderKey: { type: 'string' },
                   sheet: { type: 'string', description: 'Visible sheet name.' },
                   cell: { type: 'string', description: 'Top-left cell, A1.' },
+                  autoFit: { type: 'boolean', description: 'AfO adjusts column widths on every refresh (default true). false keeps the layout widths, so cards and buttons above the crosstab stay in place.' },
                 },
                 required: ['key', 'sheet', 'cell'],
               },

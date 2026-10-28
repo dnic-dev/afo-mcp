@@ -86,6 +86,11 @@ export interface GridSpec {
   sheet: string;
   /** Top-left cell, A1 notation. */
   cell: string;
+  /**
+   * AfO adjusts the column widths to the crosstab on every refresh (default true). Off keeps the
+   * widths of the layout, so cards and buttons above the crosstab stay in place.
+   */
+  autoFit?: boolean;
 }
 
 /** An AfO formula item, e.g. a filter component (=SAPSetFilterComponent(...)) in a cell. */
@@ -504,13 +509,14 @@ export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, str
   const grids = spec.grids.map((g, i) => {
     const id = sheetId(g.sheet);
     if (g.from) {
-      return moveRanges(replaceFirstKey(taken('Grid', g.from, 'crosstab'), g.key, esc)
+      const xml = moveRanges(replaceFirstKey(taken('Grid', g.from, 'crosstab'), g.key, esc)
         .replace(/<ShapeId>[^<]*<\/ShapeId>/, () => `<ShapeId>${i + 2}</ShapeId>`)
         .replace(/<DataProviderKey>[^<]*<\/DataProviderKey>/, () => `<DataProviderKey>${esc(g.dataProviderKey)}</DataProviderKey>`), id, g.cell);
+      return g.autoFit === undefined ? xml : xml.replace(/<AutoFit>[^<]*<\/AutoFit>/, `<AutoFit>${tf(g.autoFit)}</AutoFit>`);
     }
     return `<Grid><Key>${esc(g.key)}</Key><Description>${esc(g.key)}</Description><ShapeId>${i + 2}</ShapeId><DataProviderKey>${esc(g.dataProviderKey)}</DataProviderKey>`
       + range('RangeOccupied', id, g.cell) + range('RequestedRange', id, g.cell)
-      + `<ApplyDefaultFormats>True</ApplyDefaultFormats><ApplyNumberFormats>True</ApplyNumberFormats><AutoFit>True</AutoFit><DisplayRepeatedTexts>False</DisplayRepeatedTexts><DisplayRepeatedTitles>False</DisplayRepeatedTitles>`
+      + `<ApplyDefaultFormats>True</ApplyDefaultFormats><ApplyNumberFormats>True</ApplyNumberFormats><AutoFit>${tf(g.autoFit ?? true)}</AutoFit><DisplayRepeatedTexts>False</DisplayRepeatedTexts><DisplayRepeatedTitles>False</DisplayRepeatedTitles>`
       + `<NumberOfNewLines>5</NumberOfNewLines><NewLinesCheckMode>NONE</NewLinesCheckMode><DisplayScalingUnitsInHeader>False</DisplayScalingUnitsInHeader><HierarchySymbolType>1</HierarchySymbolType><WrapHeaderTextWithLinebreak>True</WrapHeaderTextWithLinebreak></Grid>`;
   }).join('');
 

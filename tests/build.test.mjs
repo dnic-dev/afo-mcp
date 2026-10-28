@@ -429,6 +429,19 @@ test('inputReady switches the input readiness of a taken-over data source and no
   assert.equal(readWorkbook(output).dataProviders[0].inputReady, true);
 }));
 
+test('autoFit switches the column adjustment of a crosstab, taken over or new', () => withDir((dir) => {
+  const source = join(dir, 'source.xlsm');
+  buildWorkbook(MINIMAL_SPEC, { output: source });
+  assert.match(keyedElement(readSourceDefinition(source), 'Grid', 'Crosstab1'), /<AutoFit>True<\/AutoFit>/);
+  const output = join(dir, 'fixed.xlsm');
+  buildWorkbook({
+    source,
+    dataProviders: [{ key: 'DS_1', from: 'DS_1' }],
+    grids: [{ key: 'Crosstab1', from: 'Crosstab1', sheet: 'Plan Sheet', cell: 'B10', autoFit: false }],
+  }, { output, layout: { sheets: ['Plan Sheet'] } });
+  assert.match(keyedElement(readSourceDefinition(output), 'Grid', 'Crosstab1'), /<AutoFit>False<\/AutoFit>/);
+}));
+
 test('cells write values and SAP formulas into template cells; styleSetName is written', () => withDir((dir) => {
   const output = join(dir, 'cells.xlsx');
   buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, styleSetName: 'Custom Set', cells: [
