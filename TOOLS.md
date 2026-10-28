@@ -106,6 +106,7 @@ Change an existing workbook instead of rebuilding it. Layout, cells, data source
 | `input`, `output` | Existing workbook and the changed copy |
 | `prompts` | Variable values by data source: `{ "DS_1": { "VAR_A": "KEY", "VAR_B": { "low": "202501", "high": "202512" } } }`. The workbook then opens in that selection without the prompt dialog. A data source with "reset data source" gets it switched off, one without stored state a minimal one |
 | `storePrompts` | `StorePromptsInDocument`, default true when prompts are given |
+| `refreshOnOpen` | `RefreshOnOpen`. Off lets `afo_open_workbook` log on before the first refresh (see there); users opening the workbook by hand then refresh themselves |
 | `planningFunctions` | Planning functions bound to a data source already in the workbook |
 | `agentBridge` | Retrofit the agent bridge |
 | `vbaModules` | Additional standard modules |
@@ -129,11 +130,14 @@ Open a workbook so the user sees the data at once: start Excel, log on, refresh 
 | `logon` | Log on with the configured credentials (default true) |
 | `save` | Save after the refresh — with the data when the workbook keeps data on save (`removeDataOnSave: false`) |
 | `logonWaitSeconds` | How long to retry the logon while Excel shows the security bar (default 90) |
+| `keepRefreshOnOpen` | Open a workbook with *refresh on open* as it is even when logging on (default false, see below) |
 | `timeoutSeconds` | Overall timeout (default 900) |
 
 Returns the Excel process id, the steps, the logon result, variable values after the refresh, used ranges per sheet and AfO messages.
 
-**Dialogs.** When Excel or AfO waits on a dialog — the prompt dialog for a mandatory variable without value, the AfO logon of a workbook with *refresh on open*, a message box, a repair or file-in-use prompt — the call stops after about 20 seconds without progress and returns `ok: false` with the title, text and buttons of the dialog. The dialog stays open in Excel for the user; nothing is clicked. The steps after it did not run.
+**Refresh on open.** A workbook with *refresh on open* refreshes while it loads, and Analysis for Office asks for its own logon before `SAPLogon` can run. The data sources then report connected but stay inactive: variables show `#N/A`, crosstabs stay empty. When the tool logs on, it therefore opens a working copy with refresh on open off, `<name> (afo-mcp).xlsm` next to the workbook (or in the temp folder), and names it in `notes`. The original stays as it is; `file` in the result is the copy.
+
+**Dialogs.** When Excel or AfO waits on a dialog — the prompt dialog for a mandatory variable without value, the AfO logon (with `keepRefreshOnOpen` or without configured logon), a message box, a repair or file-in-use prompt — the call stops after about 20 seconds without progress and returns `ok: false` with the title, text and buttons of the dialog. The dialog stays open in Excel for the user; nothing is clicked. The steps after it did not run.
 
 **Security bar.** For a macro workbook outside a trusted location, Excel disables the content until the user clicks *Enable Content*, and Analysis for Office refuses the logon until then. The tool keeps retrying for `logonWaitSeconds`; tell the user beforehand, or keep such workbooks in a trusted location.
 

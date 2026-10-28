@@ -571,6 +571,20 @@ test('updateWorkbook stores prompts in an existing workbook and changes nothing 
     (e) => /DS_9 is not in the workbook/.test(e.message) && /exactly one of member, literal or low/.test(e.message));
 }));
 
+test('updateWorkbook switches refresh on open and nothing else', () => withDir((dir) => {
+  const input = join(dir, 'refreshing.xlsx');
+  buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, refreshOnOpen: true }, { output: input });
+  assert.equal(readWorkbook(input).settings.settings.RefreshOnOpen, 'True');
+  const output = join(dir, 'quiet.xlsx');
+  const r = updateWorkbook({ refreshOnOpen: false }, { input, output });
+  assert.deepEqual(r.changes, ['RefreshOnOpen off']);
+  const d = readWorkbook(output);
+  assert.equal(d.settings.settings.RefreshOnOpen, 'False');
+  assert.equal(d.settings.settings.StorePromptsInDocument, readWorkbook(input).settings.settings.StorePromptsInDocument);
+  const a = unzipSync(readFileSync(input)), b = unzipSync(readFileSync(output));
+  assert.deepEqual(Object.keys(b).filter((n) => Buffer.compare(Buffer.from(a[n] ?? []), Buffer.from(b[n])) !== 0).length, 1);
+}));
+
 test('updateWorkbook points every connection to another system, from the landscape or a reference workbook', () => withDir((dir) => {
   const input = join(dir, 'dev.xlsx');
   buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined }, { output: input });

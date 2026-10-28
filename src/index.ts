@@ -346,7 +346,7 @@ const TOOLS = [
   {
     name: 'afo_update_workbook',
     description:
-      'Change an existing Analysis for Office workbook without Excel instead of rebuilding it: store prompt values (the workbook then opens in that selection without the prompt dialog), add planning functions to its AfO definition (bound to a data source already in the workbook), retrofit the agent bridge so Claude in Excel can operate it, add VBA modules. Layout, cells, data sources, crosstabs and existing macros stay as they are; existing Workbook_Open/Workbook_SheetCalculate handlers get one call added. Writes a new file (output), never the input; the workbook must be closed in Excel. Everything is checked first and every problem reported at once. Signed VBA projects are refused. Warnings name variables that still have no stored value.',
+      'Change an existing Analysis for Office workbook without Excel instead of rebuilding it: store prompt values (the workbook then opens in that selection without the prompt dialog), switch refresh on open, add planning functions to its AfO definition (bound to a data source already in the workbook), retrofit the agent bridge so Claude in Excel can operate it, add VBA modules. Layout, cells, data sources, crosstabs and existing macros stay as they are; existing Workbook_Open/Workbook_SheetCalculate handlers get one call added. Writes a new file (output), never the input; the workbook must be closed in Excel. Everything is checked first and every problem reported at once. Signed VBA projects are refused. Warnings name variables that still have no stored value.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -363,6 +363,7 @@ const TOOLS = [
           },
         },
         storePrompts: { type: 'boolean', description: 'StorePromptsInDocument. Default true when prompts are given.' },
+        refreshOnOpen: { type: 'boolean', description: 'RefreshOnOpen ("refresh all data sources on open"). A workbook that refreshes on open asks for its own AfO logon while it loads, before afo_open_workbook can log on; false avoids that. Users opening it by hand then refresh themselves.' },
         planningFunctions: PLANNING_FUNCTIONS_SCHEMA,
         agentBridge: AGENT_BRIDGE_SCHEMA,
         vbaModules: VBA_MODULES_SCHEMA,
@@ -385,7 +386,7 @@ const TOOLS = [
   {
     name: 'afo_open_workbook',
     description:
-      'Open an Analysis for Office workbook in Excel on this machine so the user sees the data at once: starts Excel (it stays open for the user), logs on with the credentials configured for this server (AFO_LOGON_* environment; only for the workbook system they are configured for, never passed as arguments), sets prompt values with SAPSetVariable, refreshes, and saves on request. Needs Windows, Excel and Analysis for Office. When Excel waits on a dialog (prompt dialog for a mandatory variable without value, AfO logon of a workbook with "refresh on open", a message box), the call stops with ok=false and the title and text of the dialog, which stays open for the user. Returns the Excel process id, the steps, the variable values after the refresh, used ranges per sheet and AfO messages.',
+      'Open an Analysis for Office workbook in Excel on this machine so the user sees the data at once: starts Excel (it stays open for the user), logs on with the credentials configured for this server (AFO_LOGON_* environment; only for the workbook system they are configured for, never passed as arguments), sets prompt values with SAPSetVariable, refreshes, and saves on request. A workbook with "refresh on open" would ask for its own AfO logon while loading; when logging on, the tool opens a working copy with refresh on open off next to it (named in notes; the original stays as it is). Needs Windows, Excel and Analysis for Office. When Excel waits on a dialog (prompt dialog for a mandatory variable without value, AfO logon, a message box), the call stops with ok=false and the title and text of the dialog, which stays open for the user. Returns the Excel process id, the steps, the variable values after the refresh, used ranges per sheet and AfO messages.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -408,6 +409,7 @@ const TOOLS = [
         save: { type: 'boolean', description: 'Save the workbook after the refresh (default false).' },
         timeoutSeconds: { type: 'number', description: 'Overall timeout (default 900).' },
         logonWaitSeconds: { type: 'number', description: 'How long to retry the logon while Excel still shows the security bar (content disabled; AfO refuses the logon then). Default 90. Tell the user beforehand to click Enable Content unless the workbook is in a trusted location.' },
+        keepRefreshOnOpen: { type: 'boolean', description: 'Open a workbook with "refresh on open" as it is even when logging on (default false: a working copy with refresh on open off is opened instead, since AfO would ask for its own logon while loading).' },
       },
       required: ['path'],
     },
@@ -459,6 +461,7 @@ function runTool(name: string, args: Args): unknown {
         save: args.save === true,
         timeoutSeconds: typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : undefined,
         logonWaitSeconds: typeof args.logonWaitSeconds === 'number' ? args.logonWaitSeconds : undefined,
+        keepRefreshOnOpen: args.keepRefreshOnOpen === true,
       });
     case 'afo_read_workbook': {
       const sections = Array.isArray(args.sections) ? (args.sections as string[]) : undefined;
@@ -508,6 +511,7 @@ function runTool(name: string, args: Args): unknown {
         {
           prompts: typeof args.prompts === 'object' && args.prompts !== null ? (args.prompts as UpdateOperations['prompts']) : undefined,
           storePrompts: typeof args.storePrompts === 'boolean' ? args.storePrompts : undefined,
+          refreshOnOpen: typeof args.refreshOnOpen === 'boolean' ? args.refreshOnOpen : undefined,
           planningFunctions: args.planningFunctions as UpdateOperations['planningFunctions'],
           agentBridge: args.agentBridge as UpdateOperations['agentBridge'],
           vbaModules: args.vbaModules as UpdateOperations['vbaModules'],

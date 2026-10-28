@@ -19,10 +19,17 @@
 //
 // A dialog Excel or AfO waits on (prompt dialog, AfO logon, message box) stops the call with a
 // report of the dialog; the dialog stays open for the user (see excel.ts).
+//
+// A workbook with "refresh on open" refreshes while it loads and asks for its own logon before
+// SAPLogon can run; the data sources then report connected but stay inactive. When this tool
+// logs on, it therefore opens a working copy with RefreshOnOpen off next to the workbook (or in
+// the temp folder when that folder is not writable) and says so in the notes.
 
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { readSourceDefinition } from '../build/source.js';
+import { updateWorkbook } from '../build/update.js';
 import { runOperateScript } from './excel.js';
 
 export interface OpenPrompt {
@@ -44,6 +51,11 @@ export interface OpenOptions {
   timeoutSeconds?: number;
   /** How long to retry the logon while the workbook's content is still disabled (default 90). */
   logonWaitSeconds?: number;
+  /**
+   * Open a workbook with RefreshOnOpen as it is, even when logging on (default false: open a
+   * working copy with RefreshOnOpen off, since AfO would otherwise ask for its own logon).
+   */
+  keepRefreshOnOpen?: boolean;
 }
 
 export interface LogonConfig {
@@ -165,18 +177,36 @@ try {
 }
 `;
 
-/** Data source keys and system id of a workbook, from its AfO definition. */
-function workbookFacts(path: string): { dataProviders: string[]; systemId?: string } {
+/** Data source keys, system id and refresh-on-open setting of a workbook, from its AfO definition. */
+function workbookFacts(path: string): { dataProviders: string[]; systemId?: string; refreshOnOpen: boolean } {
   const xml = readSourceDefinition(path);
   return {
     dataProviders: [...xml.matchAll(/<DataProvider><Key>([^<]+)<\/Key>/g)].map((m) => m[1]),
     systemId: /<SystemId>([^<]+)<\/SystemId>/.exec(xml)?.[1],
+    refreshOnOpen: /<RefreshOnOpen>True<\/RefreshOnOpen>/i.test(xml),
   };
+}
+
+/** A copy of the workbook with RefreshOnOpen off, next to it or, when that fails, in the temp folder. */
+function withoutRefreshOnOpen(path: string): string {
+  const ext = extname(path);
+  const name = `${basename(path, ext)} (afo-mcp)${ext}`;
+  let lastError: unknown;
+  for (const folder of [dirname(path), tmpdir()]) {
+    const output = join(folder, name);
+    try {
+      updateWorkbook({ refreshOnOpen: false }, { input: path, output, overwrite: true });
+      return output;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw new Error(`Could not write a working copy without refresh on open: ${(lastError as Error)?.message}`);
 }
 
 export async function openWorkbook(options: OpenOptions, env: NodeJS.ProcessEnv = process.env): Promise<unknown> {
   if (process.platform !== 'win32') throw new Error('afo_open_workbook needs Windows with Excel and Analysis for Office.');
-  const path = resolve(options.path);
+  let path = resolve(options.path);
   if (!existsSync(path)) throw new Error(`Workbook not found: ${path}`);
   const facts = workbookFacts(path);
   if (!facts.dataProviders.length) throw new Error('The workbook has no AfO data source.');
@@ -185,6 +215,11 @@ export async function openWorkbook(options: OpenOptions, env: NodeJS.ProcessEnv 
   if (options.logon !== false) {
     logon = facts.systemId ? logonConfig(facts.systemId, env) : undefined;
     if (!logon) notes.push(`No logon configured for ${facts.systemId ?? 'the workbook system'}: the user logs on in Excel.`);
+  }
+  if (logon && facts.refreshOnOpen && !options.keepRefreshOnOpen) {
+    const original = path;
+    path = withoutRefreshOnOpen(original);
+    notes.push(`The workbook refreshes on open, which makes Analysis for Office ask for its own logon before this tool can log on. Opened a working copy with refresh on open off: ${path}. The original is unchanged.`);
   }
   const prompts = (options.prompts ?? []).map((p) => ({
     name: p.name, value: p.value, format: p.format ?? 'INTERNAL_KEY', dataProvider: p.dataProvider ?? facts.dataProviders[0],

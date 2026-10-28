@@ -30,6 +30,11 @@ export interface UpdateOperations {
   prompts?: Record<string, PromptInput>;
   /** StorePromptsInDocument; true by default when prompts are given. */
   storePrompts?: boolean;
+  /**
+   * RefreshOnOpen. A workbook that refreshes on open asks for its own logon while it loads,
+   * before a logon through the API can run; false lets `afo_open_workbook` log on first.
+   */
+  refreshOnOpen?: boolean;
   /** Planning functions to add to the AfO definition, bound to an existing data source. */
   planningFunctions?: PlanningFunctionSpec[];
   /** Retrofit the agent bridge (bridge sheet, AfoAgent module, event handlers). */
@@ -119,8 +124,9 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   if (ext !== '.xlsm' && ext !== '.xlsx') throw new Error(`output must end in .xlsx or .xlsm, got ${options.output}.`);
   const prompts = Object.entries(ops.prompts ?? {}).map(([key, input]) => [key, normalizePrompts(input)] as const);
   const storePrompts = ops.storePrompts ?? (prompts.length ? true : undefined);
-  if (!prompts.length && storePrompts === undefined && !ops.planningFunctions?.length && !ops.agentBridge && !ops.vbaModules?.length && !ops.system) {
-    throw new Error('Nothing to do: give prompts, storePrompts, planningFunctions, agentBridge, vbaModules or system.');
+  const refreshOnOpen = ops.refreshOnOpen;
+  if (!prompts.length && storePrompts === undefined && refreshOnOpen === undefined && !ops.planningFunctions?.length && !ops.agentBridge && !ops.vbaModules?.length && !ops.system) {
+    throw new Error('Nothing to do: give prompts, storePrompts, refreshOnOpen, planningFunctions, agentBridge, vbaModules or system.');
   }
 
   const d = readWorkbook(input, { sections: ['sheets', 'dataProviders', 'planningObjects', 'items', 'macros'] });
@@ -223,7 +229,7 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   const targets = relTargets(wbRels);
 
   // --- The definition on the hidden sheet: prompts, settings, planning functions.
-  if (ops.planningFunctions?.length || prompts.length || storePrompts !== undefined || newSystemInfo) {
+  if (ops.planningFunctions?.length || prompts.length || storePrompts !== undefined || refreshOnOpen !== undefined || newSystemInfo) {
     const hidden = [...wb.matchAll(/<sheet [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)].find((m) => m[1] === HIDDEN_SHEET);
     if (!hidden) throw new Error('The AfO definition sheet was not found.');
     const sheetPart = resolvePart('xl/workbook.xml', targets.get(hidden[2])!);
@@ -257,6 +263,10 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
     if (storePrompts !== undefined) {
       def = setSetting(def, 'StorePromptsInDocument', storePrompts);
       changes.push(`StorePromptsInDocument ${storePrompts ? 'on' : 'off'}`);
+    }
+    if (refreshOnOpen !== undefined) {
+      def = setSetting(def, 'RefreshOnOpen', refreshOnOpen);
+      changes.push(`RefreshOnOpen ${refreshOnOpen ? 'on' : 'off'}`);
     }
     if (newSystemInfo) {
       // Every connection (data sources, planning objects, planning design time) and the workbook's system id.
