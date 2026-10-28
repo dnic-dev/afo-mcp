@@ -49,7 +49,7 @@ export interface DataProviderSpec {
   /**
    * Take this data source over from the source workbook (its key there), with its whole stored
    * state: filters, hierarchies, display settings, design rules, prompts. Other fields are ignored
-   * except key, which may rename it.
+   * except key, which may rename it, prompts and inputReady.
    */
   from?: string;
   query: string;
@@ -464,7 +464,14 @@ export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, str
   const merged = spec.mergeVariables ?? (src ? firstElement(src, 'MergeVariables') === '<MergeVariables>True</MergeVariables>' : false);
   if (!storePrompts && spec.dataProviders.some((dp) => dp.prompts?.length)) warnings.push('Prompts are given but StorePromptsInDocument is off: AfO ignores them. Set storePrompts: true.');
   const takenDataProvider = (dp: DataProviderSpec) => {
-    const xml = replaceFirstKey(taken('DataProvider', dp.from!, 'data source'), dp.key, esc);
+    let xml = replaceFirstKey(taken('DataProvider', dp.from!, 'data source'), dp.key, esc);
+    // inputReady set in the spec wins over the source's input readiness.
+    if (dp.inputReady !== undefined) {
+      const entry = `<RefreshDataEntryEnabled>${tf(dp.inputReady)}</RefreshDataEntryEnabled>`;
+      xml = /<RefreshDataEntryEnabled>[^<]*<\/RefreshDataEntryEnabled>/.test(xml)
+        ? xml.replace(/<RefreshDataEntryEnabled>[^<]*<\/RefreshDataEntryEnabled>/, entry)
+        : xml.replace(/(<\/FillableNumber>)/, `$1${entry}`);
+    }
     if (!dp.prompts?.length) return xml;
     const r = withStoredPrompts(xml, dp.prompts, () => stateXml({ ...dp, prompts: undefined, axes: undefined }, day));
     warnings.push(...r.notes.map((n) => `${dp.key}: ${n}.`));

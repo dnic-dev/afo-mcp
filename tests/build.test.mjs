@@ -413,6 +413,22 @@ test('buildWorkbook takes data sources, planning objects, crosstabs and formula 
     { output: join(dir, 'bad.xlsx') }), (e) => /no data source DS_9/.test(e.message) && /no crosstab Nope/.test(e.message));
 }));
 
+test('inputReady switches the input readiness of a taken-over data source and nothing else', () => withDir((dir) => {
+  const source = join(dir, 'source.xlsm');
+  buildWorkbook({ ...MINIMAL_SPEC, dataProviders: MINIMAL_SPEC.dataProviders.map((dp) => ({ ...dp, inputReady: false })) }, { output: source });
+  const output = join(dir, 'ready.xlsm');
+  buildWorkbook({
+    source,
+    dataProviders: [{ key: 'DS_1', from: 'DS_1', inputReady: true }],
+    grids: [{ key: 'Crosstab1', from: 'Crosstab1', sheet: 'Plan Sheet', cell: 'B10' }],
+  }, { output, layout: { sheets: ['Plan Sheet'] } });
+  const a = keyedElement(readSourceDefinition(source), 'DataProvider', 'DS_1');
+  const b = keyedElement(readSourceDefinition(output), 'DataProvider', 'DS_1');
+  assert.match(a, /<RefreshDataEntryEnabled>False<\/RefreshDataEntryEnabled>/);
+  assert.equal(b, a.replace('<RefreshDataEntryEnabled>False</RefreshDataEntryEnabled>', '<RefreshDataEntryEnabled>True</RefreshDataEntryEnabled>'));
+  assert.equal(readWorkbook(output).dataProviders[0].inputReady, true);
+}));
+
 test('cells write values and SAP formulas into template cells; styleSetName is written', () => withDir((dir) => {
   const output = join(dir, 'cells.xlsx');
   buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, styleSetName: 'Custom Set', cells: [
