@@ -113,6 +113,8 @@ const PLANNING_FUNCTIONS_SCHEMA = {
                     items: { type: 'object', properties: { name: { type: 'string' }, cell: { type: 'string' } }, required: ['name', 'cell'] },
                     description: 'Variables read from a cell at execution time, e.g. Planning!$C$9. The cell holds the external format.',
                   },
+                  deltaMode: { type: 'boolean', description: 'Process changed data only: the function gets only the records changed in the planning buffer.' },
+                  filterFromDataSource: { type: 'array', items: { type: 'string' }, description: 'Characteristics whose filter the function takes from its data source at execution time (a filter on the crosstab restricts the function too). They must be in characteristics.' },
                 },
                 required: ['key'],
               },

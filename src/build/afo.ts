@@ -120,6 +120,14 @@ export interface PlanningFunctionSpec {
   variables?: Array<{ name: string; value: string }>;
   /** Variables read from a cell at execution time (`Sheet!$C$7`, value in external format). */
   variableCells?: Array<{ name: string; cell: string }>;
+  /** Process changed data only (AfO: "Changed data" / delta mode): the function gets only records changed in the planning buffer. */
+  deltaMode?: boolean;
+  /**
+   * Characteristics whose filter the function takes from its data source at execution time, so a
+   * filter set on the crosstab (e.g. a few meter points) restricts the function too. They must be
+   * in `characteristics`.
+   */
+  filterFromDataSource?: string[];
 }
 
 export interface AfoWorkbookSpec {
@@ -253,10 +261,15 @@ export function planningFunction(pf: PlanningFunctionSpec, system: string, today
       return `<CHARACTERISTIC name="${esc(c)}">${sel ? `<SELECTIONS>${sel}</SELECTIONS>` : '<SELECTIONS />'}</CHARACTERISTIC>`;
     }).join('')
     + `</CHARACTERISTICS></SELECTION></SELECTION_STATE></BICS_VIEW>`;
-  const refs = (pf.variableCells ?? [])
-    .map((v) => `<VariableRefConfig><TechnicalName>${esc(v.name)}</TechnicalName><ReferenceType>Cell</ReferenceType><CellAdress>${esc(v.cell)}</CellAdress></VariableRefConfig>`)
-    .join('');
+  const refs = (pf.filterFromDataSource ?? [])
+    .map((c) => `<FilterRefConfig><TechnicalName>${esc(c)}</TechnicalName><ReferenceType>Filter</ReferenceType></FilterRefConfig>`)
+    .join('')
+    + (pf.variableCells ?? [])
+      .map((v) => `<VariableRefConfig><TechnicalName>${esc(v.name)}</TechnicalName><ReferenceType>Cell</ReferenceType><CellAdress>${esc(v.cell)}</CellAdress></VariableRefConfig>`)
+      .join('');
   return `<PlanningFunctionUsage><Key>${esc(pf.key)}</Key><PlanningObjectInfo><Name>${esc(pf.name)}</Name><Description>${esc(pf.description ?? pf.name)}</Description><PlanningType>Function</PlanningType>${system}</PlanningObjectInfo>`
+    // AfO spells the element DetltaMode.
+    + (pf.deltaMode ? '<ChangedData><DetltaMode>True</DetltaMode></ChangedData>' : '')
     + `<DataProviderKey>${esc(pf.dataProviderKey)}</DataProviderKey><PlanFunctionVariables><Variables_Header compressed="true">${compressBlock(vars)}</Variables_Header></PlanFunctionVariables>`
     + `<PlanFilter><BICS_VIEW_HEADER compressed="true">${compressBlock(filter)}</BICS_VIEW_HEADER></PlanFilter>`
     + (refs ? `<ReferenceConfiguration>${refs}</ReferenceConfiguration>` : '')

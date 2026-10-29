@@ -677,3 +677,11 @@ function validateSpecOrThrow(spec) {
   const errors = validateSpec(spec);
   if (errors.length) throw new Error(errors.join('\n'));
 }
+
+test('a planning function can process changed data only and take its filter from the data source', () => withDir((dir) => {
+  const output = join(dir, 'pf.xlsm');
+  buildWorkbook({ ...MINIMAL_SPEC, planningFunctions: MINIMAL_SPEC.planningFunctions.map((pf) => ({ ...pf, deltaMode: true, filterFromDataSource: pf.characteristics })) }, { output });
+  const usage = /<PlanningFunctionUsage>[\s\S]*?<\/PlanningFunctionUsage>/.exec(readSourceDefinition(output))[0];
+  assert.match(usage, /<\/PlanningObjectInfo><ChangedData><DetltaMode>True<\/DetltaMode><\/ChangedData><DataProviderKey>/);
+  for (const c of MINIMAL_SPEC.planningFunctions[0].characteristics) assert.match(usage, new RegExp(`<FilterRefConfig><TechnicalName>${c}</TechnicalName><ReferenceType>Filter</ReferenceType></FilterRefConfig>`));
+}));
