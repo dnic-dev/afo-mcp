@@ -286,6 +286,17 @@ const TOOLS = [
                     },
                   },
                   filters: FILTERS_SCHEMA,
+                  designRules: {
+                    type: 'object',
+                    description: 'Formatting rules (Analysis Design, Format Cells): a cell style per structure member (BW element UIDs), stored in the data source state as AfO does. E.g. one colour per data source column.',
+                    properties: {
+                      structure: { type: 'string', description: 'UID of the structure the members belong to.' },
+                      styles: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, background: { type: 'string', description: '#RRGGBB' }, font: { type: 'string', description: '#RRGGBB, default #2B373D' } }, required: ['name', 'background'] } },
+                      members: { type: 'array', items: { type: 'object', properties: { member: { type: 'string', description: 'Structure member UID.' }, style: { type: 'string' }, predefined: { type: 'boolean', description: 'AfO predefined style (EXCEL_GOOD, EXCEL_BAD, ...).' }, leaf: { type: 'boolean', description: 'Member without children.' } }, required: ['member', 'style'] } },
+                      area: { type: 'string', enum: ['BOTH_AREAS', 'LAST_AREA', 'FIRST_AREA'], description: 'Cells covered: BOTH_AREAS (member and data cells, default), LAST_AREA (data cells only), FIRST_AREA (member cell only).' },
+                    },
+                    required: ['structure', 'members'],
+                  },
                 },
                 required: ['key'],
               },

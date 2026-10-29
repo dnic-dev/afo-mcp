@@ -685,3 +685,30 @@ test('a planning function can process changed data only and take its filter from
   assert.match(usage, /<\/PlanningObjectInfo><ChangedData><DetltaMode>True<\/DetltaMode><\/ChangedData><DataProviderKey>/);
   for (const c of MINIMAL_SPEC.planningFunctions[0].characteristics) assert.match(usage, new RegExp(`<FilterRefConfig><TechnicalName>${c}</TechnicalName><ReferenceType>Filter</ReferenceType></FilterRefConfig>`));
 }));
+
+test('designRules are stored as AfO saves formatting rules: under MODULES of the data source state', () => withDir((dir) => {
+  const output = join(dir, 'design.xlsm');
+  buildWorkbook({ ...MINIMAL_SPEC, dataProviders: MINIMAL_SPEC.dataProviders.map((dp) => ({ ...dp, designRules: {
+    structure: 'STRUCT_UID',
+    styles: [{ name: 'Topf_DB', background: '#F2F3F3' }],
+    members: [{ member: 'MEMBER_A', style: 'Topf_DB' }, { member: 'MEMBER_B', style: 'EXCEL_BAD', predefined: true, leaf: true }],
+  } })) }, { output });
+  const dp = keyedElement(readSourceDefinition(output), 'DataProvider', 'DS_1');
+  const state = decodeCompressed(/<BICS_VIEW_HEADER compressed="true">([^<]*)</.exec(dp)[1]);
+  assert.match(state, /<\/SERVICE_DESCRIPTION><MODULES><TABLE_DESIGN><STYLE_LIST><STYLE subType="CUSTOM" name="Topf_DB"><COLOR>-855053<\/COLOR><FONT_STYLE><COLOR>-13945027<\/COLOR><\/FONT_STYLE><\/STYLE><\/STYLE_LIST>/);
+  assert.match(state, /<OPERATION isRange="true"[^>]*><ADDRESS super_type="POINT_ADDRESS" type="TUPLE"><ADDRESS super_type="LINE_ADDRESS" type="TUPLE_ELEMENT"><KEY>MEMBER_A<\/KEY><NODE_TYPE>STRUCT_UID<\/NODE_TYPE><IS_LEAF>false<\/IS_LEAF>/);
+  assert.match(state, /<KEY>MEMBER_B<\/KEY><NODE_TYPE>Leaf<\/NODE_TYPE><IS_LEAF>true<\/IS_LEAF>/);
+  assert.match(state, /name="Topf_DB" \/><RANGE><AREA>BOTH_AREAS<\/AREA><LINE_ADDRESS_NUMBER>PRIMARY<\/LINE_ADDRESS_NUMBER><\/RANGE><\/OPERATION>/);
+  assert.match(state, /<OPERATION isRange="true"[^>]*><ADDRESS[^>]*><ADDRESS[^>]*><KEY>MEMBER_B<\/KEY>/);
+  assert.match(state, /name="EXCEL_BAD" \/><RANGE><AREA>BOTH_AREAS<\/AREA><LINE_ADDRESS_NUMBER>PRIMARY<\/LINE_ADDRESS_NUMBER><\/RANGE><\/OPERATION><\/OPERATION_LIST><\/TABLE_DESIGN><\/MODULES>/);
+}));
+
+test('designRules area LAST_AREA colours the data cells only', () => withDir((dir) => {
+  const output = join(dir, 'design-data.xlsm');
+  buildWorkbook({ ...MINIMAL_SPEC, dataProviders: MINIMAL_SPEC.dataProviders.map((dp) => ({ ...dp, designRules: {
+    structure: 'STRUCT_UID', area: 'LAST_AREA', members: [{ member: 'MEMBER_A', style: 'EXCEL_GOOD', predefined: true }],
+  } })) }, { output });
+  const dp = keyedElement(readSourceDefinition(output), 'DataProvider', 'DS_1');
+  const state = decodeCompressed(/<BICS_VIEW_HEADER compressed="true">([^<]*)</.exec(dp)[1]);
+  assert.match(state, /name="EXCEL_GOOD" \/><RANGE><AREA>LAST_AREA<\/AREA>/);
+}));

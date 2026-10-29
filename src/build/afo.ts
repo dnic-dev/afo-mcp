@@ -65,6 +65,30 @@ export interface DataProviderSpec {
   axes?: { rows?: string[]; columns?: string[]; free?: string[] };
   /** Stored filters on characteristics, internal keys; several entries for one characteristic combine. */
   filters?: FilterSpec[];
+  /**
+   * Formatting rules (Analysis Design, Format Cells): a cell style per structure member, as AfO
+   * stores them in the data source state. Keys are BW element UIDs.
+   */
+  designRules?: DesignRulesSpec;
+}
+
+/** Cell styles for members of one structure, applied to the member and its data cells. */
+export interface DesignRulesSpec {
+  /** UID of the structure the members belong to. */
+  structure: string;
+  /** Own styles by name; colours as #RRGGBB, font defaults to #2B373D. */
+  styles?: Array<{ name: string; background: string; font?: string }>;
+  /**
+   * Structure member UID and its style: one of `styles`, or an AfO predefined style such as
+   * EXCEL_GOOD, EXCEL_BAD, EXCEL_NEUTRAL (`predefined: true`). `leaf: true` for a member without
+   * children (AfO addresses it as a leaf; a member with children by the structure).
+   */
+  members: Array<{ member: string; style: string; predefined?: boolean; leaf?: boolean }>;
+  /**
+   * Cells the rules cover, as AfO writes it: BOTH_AREAS (member and data cells, default),
+   * LAST_AREA (data cells only), FIRST_AREA (member cell only).
+   */
+  area?: 'BOTH_AREAS' | 'LAST_AREA' | 'FIRST_AREA';
 }
 
 /** A filter on one characteristic: members, an interval, or a comparison, included or excluded. */
@@ -446,7 +470,8 @@ function axesXml(axes: DataProviderSpec['axes']): string {
  * system without document storage that ends in an exception once the crosstab is input-ready.
  */
 export function stateXml(dp: DataProviderSpec, day: string): string {
-  return `<?xml version="1.0" encoding="UTF-8" standalone="no" ?><BICS_VIEW version="3.1"><SERVICE_DESCRIPTION><DATA_AREA>DEFAULT</DATA_AREA><QUERY>${esc(dp.query)}</QUERY></SERVICE_DESCRIPTION><MODULES />`
+  return `<?xml version="1.0" encoding="UTF-8" standalone="no" ?><BICS_VIEW version="3.1"><SERVICE_DESCRIPTION><DATA_AREA>DEFAULT</DATA_AREA><QUERY>${esc(dp.query)}</QUERY></SERVICE_DESCRIPTION>`
+    + (dp.designRules ? `<MODULES>${tableDesignXml(dp.designRules)}</MODULES>` : '<MODULES />')
     + (dp.infoProvider ? `<INFO_PROVIDER name="${esc(dp.infoProvider)}" />` : '')
     + `<QUERY name="${esc(dp.query)}"><DUE_DATE>${day}</DUE_DATE></QUERY>`
     + (dp.prompts?.length ? `<VARIABLES>${dp.prompts.map(promptXml).join('')}</VARIABLES>` : '')
@@ -454,6 +479,33 @@ export function stateXml(dp: DataProviderSpec, day: string): string {
     + (dp.inputReady ?? true ? '<IS_INPUT_ENABLED>true</IS_INPUT_ENABLED>' : '')
     + axesXml(dp.axes)
     + `<DOCUMENT_APPLICATION_ASSIGNED /></BICS_VIEW>`;
+}
+
+/** #RRGGBB as the signed 32-bit ARGB integer AfO stores colours as. */
+const afoColor = (hex: string) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) throw new Error(`Colour ${hex}: expected #RRGGBB.`);
+  return ((0xff000000 | parseInt(m[1], 16)) >> 0).toString();
+};
+
+/**
+ * `<TABLE_DESIGN>` as AfO saves formatting rules in the data source state (under `<MODULES>`):
+ * one CELL_STYLE operation per structure member, addressed by member and structure UID, covering
+ * the member and its data cells.
+ */
+export function tableDesignXml(rules: DesignRulesSpec): string {
+  const own = new Set((rules.styles ?? []).map((s) => s.name));
+  for (const m of rules.members) if (!m.predefined && !own.has(m.style)) throw new Error(`Design rule for ${m.member}: unknown style ${m.style}.`);
+  const styles = (rules.styles ?? []).map((s) => `<STYLE subType="CUSTOM" name="${esc(s.name)}"><COLOR>${afoColor(s.background)}</COLOR>`
+    + `<FONT_STYLE><COLOR>${afoColor(s.font ?? '#2B373D')}</COLOR></FONT_STYLE></STYLE>`).join('');
+  const st = esc(rules.structure);
+  const operations = rules.members.map((m, i) => `<OPERATION isRange="true" operation_id="${randomUUID()}" type="CELL_OBJECT" name="Format_${i + 1}" active="true" subType="CELL_STYLE">`
+    + `<ADDRESS super_type="POINT_ADDRESS" type="TUPLE"><ADDRESS super_type="LINE_ADDRESS" type="TUPLE_ELEMENT"><KEY>${esc(m.member)}</KEY>${m.leaf ? '<NODE_TYPE>Leaf</NODE_TYPE><IS_LEAF>true</IS_LEAF>' : `<NODE_TYPE>${st}</NODE_TYPE><IS_LEAF>false</IS_LEAF>`}`
+    + `<ADDRESS type="CHARACTERISTIC"><KEY>${st}</KEY><IS_STRUCTURE>true</IS_STRUCTURE></ADDRESS></ADDRESS>`
+    + `<ADDRESS super_type="LINE_ADDRESS" type="CHARACTERISTIC"><KEY>${st}</KEY><IS_STRUCTURE>true</IS_STRUCTURE></ADDRESS></ADDRESS>`
+    + `<OBJECT type="CELL_STYLE" subType="${m.predefined ? 'PREDEFINED' : 'CUSTOM'}" name="${esc(m.style)}" />`
+    + `<RANGE><AREA>${esc(rules.area ?? 'BOTH_AREAS')}</AREA><LINE_ADDRESS_NUMBER>PRIMARY</LINE_ADDRESS_NUMBER></RANGE></OPERATION>`).join('');
+  return `<TABLE_DESIGN>${styles ? `<STYLE_LIST>${styles}</STYLE_LIST>` : '<STYLE_LIST />'}<OPERATION_LIST>${operations}</OPERATION_LIST></TABLE_DESIGN>`;
 }
 
 /** The `<Application>` document. `sheetIds` maps sheet names to their AfO ids. */
