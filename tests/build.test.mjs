@@ -277,6 +277,13 @@ test('agentBridge adds the bridge sheet, defined names, the AfoAgent module and 
   assert.match(sheet, /API SAPFunction arg1\|arg2/);
   assert.match(agent, /PutFormula "Q2", "=SAPListOf\(""DATASOURCES""\)"/);
   assert.match(sheet, /Ask the user before SAVE/);
+  // Filters as Analysis for Office filters: several values, values from a range, by key figure value.
+  assert.match(agent, /Case "FILTERWHERE": RunOne = DoFilterWhere\(rest\)/);
+  assert.match(agent, /Case "UNFILTER": RunOne = DoUnfilter\(rest\)/);
+  assert.match(agent, /If InStr\(cmd, vbLf\) > 0 Then steps = Split\(cmd, vbLf\) Else steps = Split\(cmd, ";"\)/);
+  assert.match(agent, /v = RangeKeys\(Mid\$\(v, 2\)\)/);
+  assert.match(sheet, /FILTERWHERE DS_1 DIMENSION &quot;Key figure&quot; &gt;= 100000/);
+  assert.match(sheet, /Never use Excel means on a crosstab: no AutoFilter/);
   assert.match(sheet, /SAPListOfVariables/);
   assert.match(sheet, /<c r="Q1" t="inlineStr"><is><t xml:space="preserve">Data sources \(live\)/);
   assert.match(wb, /<sheet name="AgentLog" sheetId="2" r:id="rIdAfoAgent" state="hidden"\/>/);
