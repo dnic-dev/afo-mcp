@@ -10,3 +10,4 @@ samples/
 
 # Local working notes and handovers: they name customers and systems.
 playbooks/
+skills/*.zip

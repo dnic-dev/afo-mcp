@@ -1,66 +1,130 @@
 ---
 name: afo-agent-bridge
-description: Operate SAP Analysis for Office (AfO) workbooks in Excel through their agent bridge - filter, navigate, set variables, enter plan values, run planning functions, save. Use whenever the open workbook has a sheet "AgentLog" or the defined name AfoAgentCommand, or shows AfO crosstabs (SAP* cell styles, data sources DS_1 ...), and the user asks to filter, show, select, change, plan, refresh or save anything in it. Always prefer the bridge over Excel features (AutoFilter, sorting, hiding, formulas) on AfO crosstabs.
+description: Operate SAP Analysis for Office (AfO) workbooks agentically from inside Excel through their agent bridge - read and analyse data, change variables and selections, filter (by member, interval, list or key figure value), navigate (move dimensions, swap axes), enter plan data, run planning functions and sequences, save or discard plan data, trigger workbook buttons and call any other AfO API function. Use in every Excel workbook that has a sheet "AgentLog" or the defined name AfoAgentCommand, or that shows AfO crosstabs (SAP* cell styles, data sources DS_1, DS_2 ...), for any request that touches its data or its SAP connection. Prefer the bridge over Excel features (AutoFilter, sorting, hiding, formulas) on everything Analysis for Office owns.
 ---
 
-# Operating Analysis for Office workbooks
+# Operating Analysis for Office workbooks through the agent bridge
 
-Analysis for Office ignores values that an add-in writes into cells (Office.js raises no Change
-event), and it rebuilds every crosstab on refresh. So in an AfO workbook nothing is done with
-Excel features. Everything goes through the **agent bridge**: a command cell that VBA turns into
-calls of the AfO API, as if the user had clicked.
+Analysis for Office (AfO) owns its crosstabs. It rebuilds them on every refresh and navigation,
+and it does not see values that an add-in writes into cells (writes through the Excel JavaScript
+API raise no Change event). Anything done with Excel features on a crosstab is therefore lost or,
+worse, silently wrong. AfO acts only on its own API.
 
-## Find the bridge
+The **agent bridge** is the way in: a command cell that VBA in the workbook turns into AfO API
+calls, as if the user had clicked. This skill works for any AI that drives Excel through the
+JavaScript API (Claude in Excel or others) and for any AfO workbook that carries the bridge.
 
-- Defined names: `AfoAgentCommand` (command cell, B1 of the hidden sheet `AgentLog`),
-  `AfoAgentResult` (B3), `AfoAgentStatus` (B4).
-- B4 must read `active`. Otherwise macros are disabled: ask the user to click "Enable content"
-  and to reopen if needed. Do not work around it with Excel.
-- The bridge sheet lists the commands, the rules, the data sources, planning functions and
-  crosstabs of this workbook, and logs every step with the AfO messages. Read it once.
+## 1. Get oriented first
 
-## Run commands
+1. Find the bridge: defined names `AfoAgentCommand` (command, B1 of the hidden sheet `AgentLog`),
+   `AfoAgentResult` (B3), `AfoAgentStatus` (B4).
+   - No bridge: say so. AfO cannot be operated from the Excel JavaScript API. Offer read-only help
+     (reading crosstab values) and suggest adding the bridge (afo-mcp `afo_update_workbook`
+     with `agentBridge`). Do not imitate AfO with Excel features.
+   - B4 not `active`: macros are disabled. Ask the user to click "Enable content". Nothing else
+     works until then.
+2. Read the bridge sheet once: its command list, its rules, the data sources, planning functions,
+   sequences and crosstabs of this workbook, the live lists (from column Q) and the message area
+   (column F).
+3. Read what the request is about (section 3): dimensions with their axes, current filters,
+   variable values, members. Map the user's words to technical names this way; never guess a
+   technical name.
 
-1. Write the command into `AfoAgentCommand`. Several commands: **one per line** (line breaks in
-   the cell). A single line may also separate commands by `;`, but never when a value contains `;`.
-2. Poll `AfoAgentResult` every second until it no longer starts with `running`.
-   `OK ...` = done, `ERROR ... in step n (...)` = that step failed, with the reason.
-3. Read the log rows below the commands for details and AfO messages; read the crosstab to check
-   the effect.
+## 2. Run commands
 
-| Command | Use |
+- Write the command into `AfoAgentCommand`. Several commands: **one per line** (line breaks in
+  the cell); they run in order and stop at the first error. A single line may separate commands by
+  `;`, but only if no value contains `;`.
+- Poll `AfoAgentResult` about once a second until it no longer starts with `running`.
+  `OK …` = all steps done; `ERROR … in step n (…): reason` = that step failed, later steps did not
+  run. Still `running` after 30 seconds: a dialog is open in Excel; ask the user to look.
+- The log below the command list has one line per step plus every new AfO message (errors fail the
+  step). Read it when something is unclear.
+- Verify the effect (section 3) before reporting success.
+
+### Command reference
+
+| Command | Purpose |
 |---|---|
-| `FILTER DS_1 DIM=value` | Filter a characteristic by key, interval `a - b`, several keys `a;b;c` (own line), or `@Sheet!A1:A50` for keys in a range. Empty value removes the filter. |
-| `FILTERWHERE DS_1 DIM "Key figure" >= 100000` | Filter a characteristic to the members whose crosstab value meets the condition (`=`, `<>`, `<`, `<=`, `>`, `>=`). Key figure = column header text. Result is a real AfO filter on member keys and survives refresh. The crosstab must show DIM's keys. |
-| `UNFILTER DS_1 DIM` | Remove the navigation filter of a characteristic. |
-| `VAR DS_1 NAME=value` | Set a variable (external format, as in the prompt). |
-| `REFRESH` / `REFRESH DS_1` | Refresh. Set mandatory variables first. |
-| `SET Sheet!A1=value` | Enter a plan value as user input (decimal point, no thousands separator). Follow with `TRANSFER` or `PLAN`. |
-| `TRANSFER` | Send entered values to the server and check them. |
-| `PLAN PF_1` / `PVAR PF_1 NAME=value` | Run a planning function or sequence / set its variable. |
-| `SAVE` / `RESET` | Save / discard plan data. **Ask the user first.** |
-| `API SAPFunction a|b|c` | Any other AfO API call: `SAPMoveDimension`, `SAPSetFilter`, `SAPExecuteCommand`, `SAPSetFormat` ... (not `SAPLogon`). |
-| workbook commands | Listed on the bridge sheet; they run the macros behind the buttons. |
+| `VAR DS NAME=value` | Set a variable of a data source, value as typed in the prompt (external format, e.g. dates and periods as displayed, intervals `a - b`). Consecutive `VAR` lines are submitted together; follow with `REFRESH` if needed. |
+| `REFRESH` · `REFRESH DS` | Refresh all data sources or one. Mandatory variables must have values, or AfO opens the prompt dialog. |
+| `FILTER DS DIM=value` | Navigation filter on a characteristic: one key, an interval `a - b`, several keys `a;b;c` (own line), or `@Sheet!A1:A99` for the keys in a range. Empty value removes it. |
+| `FILTERWHERE DS DIM "Column header" op number` | Filter a characteristic to the members whose value in the crosstab column meets the condition (`=` `<>` `<` `<=` `>` `>=`, decimal point, no thousands separator). Becomes a real AfO filter on the member keys and survives refresh. The crosstab must show the characteristic's keys in its rows. |
+| `UNFILTER DS DIM` | Remove the navigation filter of a characteristic. Variables are not touched. |
+| `SET Sheet!A1=value` | Enter a value as user input, e.g. plan data in an input-ready cell. Numbers with decimal point. A range sets the same value in every cell. Empty value clears. |
+| `TRANSFER` | Send entered values to the server and check them (disaggregation, characteristic relationships, data slices, locks). |
+| `PLAN key` | Run a planning function or sequence (keys as listed on the bridge sheet, e.g. `PF_1`, `PS_1`). |
+| `PVAR key NAME=value` | Set a variable of a planning function or sequence. Variables the workbook reads from a cell: change the cell with `SET` instead. |
+| `SAVE` · `RESET` | Save plan data to the server / discard unsaved plan data. **Always ask the user first.** |
+| `API SAPFunction a|b|c` | Any other AfO API function with its arguments (see below). The result is logged; `0` counts as failure. `SAPLogon` is refused. |
+| Workbook commands | Listed on the bridge sheet; each runs the macro behind a button of the workbook. Prefer them where they exist, since they carry the workbook's own logic. |
 
-## Read
+### More AfO through `API`
+
+Use the AfO API by name. Commonly needed:
+
+- `SAPMoveDimension` – move a characteristic to rows, columns or the background (free), or change
+  its position; this is how drill-down and "remove from crosstab" work.
+- `SAPSetFilter` – the full filter function (FILTER is the short form).
+- `SAPExecuteCommand` – AfO commands such as `Refresh`, `PlanDataTransfer`, `PlanDataSave`,
+  `PlanDataReset`, `ShowPrompts`, and others AfO offers in its API.
+- `SAPSetRefreshBehaviour` – pause and resume refreshing while several changes are made.
+- `SAPSetFormat` and further design functions where the workbook uses formatting rules.
+- `SAPCallMemberSelector` – opens AfO's member selection dialog for the user.
+
+If unsure about a function's arguments, try it once and read the result in `AfoAgentResult` and
+the log; do not repeat failing calls with guessed variations, ask instead.
+
+## 3. Read and verify
 
 AfO read functions are worksheet formulas. Write them into free cells of `AgentLog` from `AD2`,
-read the result, delete them again:
-`=SAPListOfEffectiveFilters("DS_1")`, `=SAPListOfDimensions("DS_1")`,
-`=SAPListOfVariables("DS_1")`, `=SAPGetVariable("DS_1","NAME","VALUEASKEY")`,
-`=SAPListOfMembers("DS_1","DIM")`. Values of the crosstab itself can be read directly.
+read the (often multi-row) result, then delete them:
 
-## Rules
+| Formula | Returns |
+|---|---|
+| `=SAPListOfDimensions("DS")` | Dimensions: technical name, text, axis (ROWS, COLUMNS, empty = free). |
+| `=SAPListOfEffectiveFilters("DS")` | Filters in effect, from variables and navigation. |
+| `=SAPListOfDynamicFilters("DS")` | Navigation filters only. |
+| `=SAPListOfVariables("DS")` | Variables with their current values. |
+| `=SAPGetVariable("DS","NAME","VALUEASKEY")` | One variable value (`VALUEASTEXT` for the text). |
+| `=SAPListOfMembers("DS","DIM")` | Members of a dimension (keys and texts). |
+| `=SAPGetDisplayedMeasures("DS")` | Key figures shown. |
+| `=SAPGetData("DS","measure",…)` · `=SAPGetMember(…)` · `=SAPGetDimensionInfo(…)` | Single values and member/dimension details. |
+| `=SAPGetSourceInfo("DS","DataSourceName")` | Description and other properties of a data source. |
+| `=SAPListOfMessages()` | Current AfO messages (also kept on the bridge sheet). |
+| `=SAPListOf("DATASOURCES")`, `"CROSSTABS"`, `"PLANNINGFUNCTIONS"`, `"PLANNINGSEQUENCES"` | Objects of the workbook (also live on the bridge sheet). |
 
-- No AutoFilter, sorting, hiding, grouping, formulas or values written into an AfO crosstab. A
-  filter on values is `FILTERWHERE`, a filter on members `FILTER`, layout changes `API
-  SAPMoveDimension`. If no command covers a request, say so and ask before using Excel.
-- Map the user's words to technical names with `SAPListOfDimensions`: e.g. "Anlagennummer" is
-  `0UCINSTALLA`. Key figures are addressed by their column header text in `FILTERWHERE`.
-- Before writing plan values: only input-ready cells (yellow), numbers only; check after
-  `TRANSFER` that the values are still there and `AfoAgentResult` says OK.
-- Ambiguous selection (several matching rows, a member under several parents): ask first.
-- After a step, report what changed in the user's terms (e.g. "25 of 604 installations remain,
-  all with a projected annual consumption of at least 100,000 kWh") and how to undo it
-  (`UNFILTER ...`).
-- A result still `running` after 30 seconds: a dialog is probably open in Excel; ask the user.
+Crosstab values themselves can be read directly from the cells. Planning and input-ready cells
+are recognisable by their cell style (input-ready styles, typically highlighted).
+
+## 4. Working patterns
+
+- **Answer a question about the data:** read the crosstab; if the data needed is not in it,
+  change the navigation (`API SAPMoveDimension`, `FILTER`) rather than computing around it in
+  Excel, then read again. Undo navigation the user did not ask to keep.
+- **Change the selection (period, version, organisational unit …):** `VAR` lines, then `REFRESH`.
+  Check with `SAPListOfVariables`.
+- **Restrict what is shown:** members → `FILTER`; a condition on a key figure → `FILTERWHERE`;
+  lift with `UNFILTER`. Check with `SAPListOfDynamicFilters`. Tell the user how to undo it.
+- **Plan:** confirm the target cells are input-ready and unambiguous; `SET` the values;
+  `TRANSFER`; check `AfoAgentResult` and that the values are still in the cells (AfO drops text in
+  data cells silently and may disaggregate totals to the members below). Use a planning function
+  (`PLAN`) for changes to many cells or for derived values. Then ask before `SAVE`.
+- **Several changes at once:** put them on separate lines of one command; consider
+  `API SAPSetRefreshBehaviour` to pause refreshing for larger sequences.
+- **Something fails:** report the step and AfO's message in plain words, propose the next step,
+  do not retry blindly.
+
+## 5. Rules
+
+- Never use Excel features on AfO crosstabs: no AutoFilter, sorting, hiding or grouping of rows or
+  columns, no formulas or values written into crosstab cells except through `SET`, no copying a
+  crosstab to compute on it when AfO can deliver the result. If no command or API function covers
+  a request, say so and ask before using Excel.
+- Variables, filters and planning objects are addressed by technical name, found by reading
+  (section 1.3), never guessed. Ambiguous selections (several matching rows, a member under several
+  parents): ask before writing.
+- Writes that change data on the server (`SAVE`, planning functions that save, `RESET`) need the
+  user's explicit go-ahead each time.
+- Do not change the bridge sheet itself, the data source definitions or the workbook's VBA.
+- Report in the user's terms: what changed, how many rows or members are affected, how to undo.
