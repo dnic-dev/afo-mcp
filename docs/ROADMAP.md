@@ -108,7 +108,10 @@ to cover what a planner can do in AfO with keyboard and mouse.
       exist. *(Parameters of SAPMoveDimension and the design rule functions to be confirmed live.)*
 
 - [ ] **`MOVE`:** move a dimension to rows, columns or free characteristics (`SAPMoveDimension`).
-- [ ] **Hierarchies:** expand, collapse, drill level; find the `SAPExecuteCommand` commands.
+- [x] **Hierarchies:** `EXPAND`, `COLLAPSE`, `DRILLLEVEL` (#14). The AfO API has no function for
+      hierarchies; the bridge clicks the node symbol like a user (AfO reads the position from the
+      mouse pointer). Tested live on a BW hierarchy and on the compact display of rows. Switching a
+      hierarchy on or off has no API: it comes from the query or the saved state.
 - [ ] **Filter on planning objects** (`SAPSetFilter` with a planning object alias); test.
 - [ ] **Write by members:** `SAPSetData` (value for a member combination), independent of the
       crosstab layout; needed for formula-based planning and for cells not on screen.

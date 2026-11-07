@@ -48,6 +48,9 @@ export const BUILTIN_COMMANDS: Array<[string, string]> = [
   ['FILTERWHERE DS_1 DIMENSION "Key figure" >= 100000', 'Filter a characteristic to the members whose value in the crosstab of DS_1 meets the condition (=, <>, <, <=, >, >=). The key figure is the column header text as shown. The result is a real Analysis for Office filter on the member keys; it stays when the data source is refreshed. Lift it with UNFILTER.'],
   ['UNFILTER DS_1 DIMENSION', 'Remove the navigation filter of a characteristic (variables stay as they are).'],
   ['REFRESH', 'Refresh all data sources (REFRESH DS_1: one data source). Set mandatory variables with VAR first, or the prompt dialog opens.'],
+  ['EXPAND DS_1 node', 'Expand a hierarchy node in the crosstab of DS_1, as a click on its [+] does: the node by key or text as shown, or its cell (Sheet!B9) when the name appears more than once. Works for BW hierarchies and for the compact display of rows. Nodes show [+] (collapsed) or [-] (expanded) before their name.'],
+  ['COLLAPSE DS_1 node', 'Collapse a hierarchy node, as a click on its [-] does; same forms as EXPAND.'],
+  ['DRILLLEVEL DS_1 DIMENSION=2', 'Show the hierarchy of a characteristic in the rows down to level n (1 = top nodes only), expanding and collapsing node by node. Works for BW hierarchies and for the compact display of rows.'],
   ['API SAPFunction arg1|arg2|...', 'Call any Analysis for Office API function with its arguments, separated by "|": navigation (SAPMoveDimension), design rules (SAPSetFormat, SAPInsertLine), commands (SAPExecuteCommand). The result is logged; 0 counts as failure. SAPLogon is not allowed.'],
   ['SAVE', 'Save plan data to the server.'],
   ['RESET', 'Discard unsaved plan data.'],
@@ -62,6 +65,7 @@ const RULES = [
   'Write only input-ready cells of input-ready crosstabs. For changes to many cells prefer a planning function.',
   'After SET, run TRANSFER or a planning function and check B3: rejected values (data slices, characteristic relationships, locks) turn the step into ERROR.',
   'Data cells take numbers only. Text in a data cell is ignored by Analysis for Office without a message: after recalculating, check that the values you wrote are still there.',
+  'Hierarchies: EXPAND, COLLAPSE and DRILLLEVEL work on a hierarchy that is shown. Switching a hierarchy on or off, or the compact display of rows, has no API function: it comes from the query or from the state saved with the workbook; ask the user to switch it in Analysis for Office if needed. These commands click the [+]/[-] symbol as a user does: the crosstab sheet is shown, the mouse pointer jumps there for a moment, and the Excel window must not be minimized.',
   'Navigation (moving dimensions, drilling down) makes crosstabs grow; one growing into another is cut off (a WARNING in the log). Check the layout before navigating a crosstab placed above another.',
   'B3 still says "running" after 30 seconds: a dialog is probably open in Excel; ask the user to look.',
   'B4 is not "active": macros are disabled; ask the user to enable content and reopen.',
@@ -146,6 +150,19 @@ Private pending As String
 Private variablesPaused As Boolean
 Private lastMessage As String
 Private initTries As Long
+Private stage As String
+
+' Hierarchy nodes are expanded and collapsed by a click on their symbol: the AfO API has no
+' function for it, and Analysis for Office reads the click position from the mouse pointer.
+Private Type PointApi
+    x As Long
+    y As Long
+End Type
+Private Declare PtrSafe Function GetCursorPos Lib "user32" (p As PointApi) As Long
+Private Declare PtrSafe Function SetCursorPos Lib "user32" (ByVal x As Long, ByVal y As Long) As Long
+Private Declare PtrSafe Function ScreenToClient Lib "user32" (ByVal hwnd As LongPtr, p As PointApi) As Long
+Private Declare PtrSafe Function PostMessageA Lib "user32" (ByVal hwnd As LongPtr, ByVal msg As Long, ByVal wParam As LongPtr, ByVal lParam As LongPtr) As Long
+Private Declare PtrSafe Function FindWindowExA Lib "user32" (ByVal parent As LongPtr, ByVal after As LongPtr, ByVal cls As String, ByVal title As String) As LongPtr
 
 Public Sub MarkActive()
     SetCell "B4", "active"
@@ -237,7 +254,7 @@ Private Function RunOne(ByVal stepText As String) As Boolean
     Else
         verb = UCase$(stepText)
     End If
-    lastMessage = ""
+    lastMessage = "": stage = ""
     Dim before As Object
     If verb <> "SET" Then Set before = MessageKeys()
     On Error GoTo failed
@@ -255,6 +272,9 @@ Private Function RunOne(ByVal stepText As String) As Boolean
     Case "FILTERWHERE": RunOne = DoFilterWhere(rest)
     Case "UNFILTER": RunOne = DoUnfilter(rest)
     Case "API": RunOne = DoApi(rest)
+    Case "EXPAND": RunOne = DoNode(rest, True)
+    Case "COLLAPSE": RunOne = DoNode(rest, False)
+    Case "DRILLLEVEL": RunOne = DoDrillLevel(rest)
 ${custom}
     Case Else
         lastMessage = "unknown command " & verb
@@ -272,6 +292,7 @@ ${custom}
     Exit Function
 failed:
     lastMessage = Err.Description
+    If stage <> "" Then lastMessage = lastMessage & " (at " & stage & ")"
     LogLine "ERROR", stepText, lastMessage
     RunOne = False
 End Function
@@ -512,6 +533,212 @@ Private Function DimensionText(ByVal ds As String, ByVal dimension As String) As
     End If
 none:
 End Function
+
+' EXPAND DS_1 node / COLLAPSE DS_1 node: node by key or text as shown, or its cell (Sheet!B9).
+Private Function DoNode(ByVal rest As String, ByVal expand As Boolean) As Boolean
+    Dim verb As String: verb = IIf(expand, "EXPAND", "COLLAPSE")
+    Dim sp As Long: sp = InStr(rest, " ")
+    If sp = 0 Then lastMessage = "form: " & verb & " DS_1 node (key or text as shown, or Sheet!B9)": Exit Function
+    Dim ds As String: ds = Trim$(Left$(rest, sp - 1))
+    Dim node As String: node = Trim$(Mid$(rest, sp + 1))
+    stage = "find node"
+    Dim c As Range: Set c = FindNode(ds, node)
+    If c Is Nothing Then Exit Function
+    stage = "node state"
+    Dim state As String: state = NodeState(c)
+    If state = "" Then lastMessage = node & " (" & c.Address(False, False) & ") shows no [+] or [-]: a leaf, or no hierarchy is shown": Exit Function
+    If (state = "-") = expand Then
+        lastMessage = node & " is already " & IIf(expand, "expanded", "collapsed")
+        DoNode = True
+        Exit Function
+    End If
+    Dim back As Worksheet: Set back = ActiveSheet
+    DoNode = ToggleNode(c)
+    RestoreSheet back
+    If DoNode Then lastMessage = Trim$(Txt(c.Value)) & IIf(expand, " expanded", " collapsed") & " (" & c.Worksheet.Name & "!" & c.Address(False, False) & ")"
+End Function
+
+' DRILLLEVEL DS_1 DIMENSION=n: nodes above level n expanded, nodes on level n and below collapsed.
+Private Function DoDrillLevel(ByVal rest As String) As Boolean
+    Dim sp As Long: sp = InStr(rest, " ")
+    Dim eq As Long: eq = InStr(rest, "=")
+    Const form As String = "form: DRILLLEVEL DS_1 DIMENSION=2 (1 = top nodes only)"
+    If sp = 0 Or eq < sp Then lastMessage = form: Exit Function
+    Dim ds As String: ds = Trim$(Left$(rest, sp - 1))
+    Dim dimension As String: dimension = Trim$(Mid$(rest, sp + 1, eq - sp - 1))
+    Dim levelText As String: levelText = Trim$(Mid$(rest, eq + 1))
+    If levelText = "" Or levelText Like "*[!0-9]*" Then lastMessage = form: Exit Function
+    Dim level As Long: level = CLng(levelText)
+    If level < 1 Then lastMessage = form: Exit Function
+    Dim back As Worksheet: Set back = ActiveSheet
+    Dim changed As Long, c As Range, target As Range, r As Long, col As Long, headRow As Long, area As Range, state As String
+    Do
+        Set area = CrosstabArea(ds)
+        If area Is Nothing Then lastMessage = "no crosstab of " & ds: GoTo done
+        If Not NodeColumn(ds, dimension, area, col, headRow) Then GoTo done
+        Set target = Nothing
+        For r = headRow + 1 To area.Row + area.Rows.Count - 1
+            Set c = area.Worksheet.Cells(r, col)
+            state = NodeState(c)
+            If state = "+" And NodeLevel(c) + 1 < level Then Set target = c: Exit For
+            If state = "-" And NodeLevel(c) + 1 >= level Then Set target = c: Exit For
+        Next r
+        If target Is Nothing Then Exit Do
+        If Not ToggleNode(target) Then GoTo done
+        changed = changed + 1
+        If changed >= 200 Then lastMessage = "stopped after 200 nodes; set a lower level or filter first": GoTo done
+    Loop
+    lastMessage = dimension & ": levels 1 to " & level & " shown (" & changed & " node(s) changed)"
+    DoDrillLevel = True
+done:
+    RestoreSheet back
+End Function
+
+' The crosstab area of a data source, as the crosstab shows it now.
+Private Function CrosstabArea(ByVal ds As String) As Range
+    Dim topLeft As Range: Set topLeft = CrosstabTopLeft(ds)
+    If Not topLeft Is Nothing Then Set CrosstabArea = topLeft.CurrentRegion
+End Function
+
+' A cell AfO renders as a hierarchy node: a [+]/[-] prefix, or (a leaf) the indentation prefix in a
+' hierarchy cell style. Text cells next to the node carry the style too, but no prefix.
+Private Function IsNodeCell(ByVal c As Range) As Boolean
+    If NodeState(c) <> "" Then IsNodeCell = True: Exit Function
+    If Left$(Txt(c.NumberFormat), 2) <> """ " Then Exit Function
+    On Error Resume Next
+    IsNodeCell = (c.Style.Name Like "SAPHierarchy*")
+End Function
+
+' "+" collapsed, "-" expanded, "" leaf or no hierarchy. AfO writes the symbol into the number format.
+Private Function NodeState(ByVal c As Range) As String
+    Dim nf As String: nf = Txt(c.NumberFormat)
+    If InStr(nf, "[+]") > 0 Then
+        NodeState = "+"
+    ElseIf InStr(nf, "[-]") > 0 Then
+        NodeState = "-"
+    End If
+End Function
+
+' Zero-based level of a node: AfO indents each level by two blanks before the symbol.
+Private Function NodeLevel(ByVal c As Range) As Long
+    Dim nf As String: nf = Txt(c.NumberFormat)
+    If Left$(nf, 1) = """" Then nf = Mid$(nf, 2)
+    Dim i As Long
+    Do While Mid$(nf, i + 1, 1) = " "
+        i = i + 1
+    Loop
+    NodeLevel = i \\ 2
+End Function
+
+' The node cell for a key or text as shown (or a cell reference), unique in the crosstab of ds.
+Private Function FindNode(ByVal ds As String, ByVal node As String) As Range
+    Dim c As Range, hit As Range, n As Long, places As String
+    If node Like "*!*" Then
+        Dim bang As Long: bang = InStrRev(node, "!")
+        Dim sheetName As String: sheetName = Trim$(Left$(node, bang - 1))
+        If Left$(sheetName, 1) = "'" And Right$(sheetName, 1) = "'" Then sheetName = Replace(Mid$(sheetName, 2, Len(sheetName) - 2), "''", "'")
+        On Error Resume Next
+        Set c = ThisWorkbook.Worksheets(sheetName).Range(Trim$(Mid$(node, bang + 1))).Cells(1, 1)
+        On Error GoTo 0
+        If c Is Nothing Then lastMessage = "no cell " & node: Exit Function
+        If Not IsNodeCell(c) Then lastMessage = node & " is not a hierarchy node": Exit Function
+        Set FindNode = c
+        Exit Function
+    End If
+    stage = "crosstab"
+    Dim area As Range: Set area = CrosstabArea(ds)
+    If area Is Nothing Then lastMessage = "no crosstab of " & ds: Exit Function
+    stage = "scan nodes"
+    For Each c In area.Cells
+        If IsNodeCell(c) Then
+            If StrComp(Trim$(Txt(c.Value)), node, vbTextCompare) = 0 Or StrComp(Trim$(Txt(c.Offset(0, 1).Value)), node, vbTextCompare) = 0 Then
+                n = n + 1
+                If hit Is Nothing Then Set hit = c
+                If n <= 5 Then places = places & " " & c.Address(False, False)
+            End If
+        End If
+    Next c
+    If n = 0 Then lastMessage = "no hierarchy node " & node & " in the crosstab of " & ds & " (is it shown? expand its parent first)": Exit Function
+    If n > 1 Then lastMessage = node & " appears " & n & " times (" & Trim$(places) & "); give the cell, e.g. Sheet!" & hit.Address(False, False): Exit Function
+    Set FindNode = hit
+End Function
+
+' Column of the crosstab holding the nodes of a dimension, found by its header; row of that header.
+Private Function NodeColumn(ByVal ds As String, ByVal dimension As String, ByVal area As Range, col As Long, headRow As Long) As Boolean
+    Dim dimText As String: dimText = Normalize(DimensionText(ds, dimension))
+    If dimText = "" Then lastMessage = dimension & " is not a dimension of " & ds: Exit Function
+    Dim r As Long, c As Long, ws As Worksheet: Set ws = area.Worksheet
+    For r = area.Row To Application.Min(area.Row + area.Rows.Count - 1, area.Row + 15)
+        For c = area.Column To area.Column + area.Columns.Count - 1
+            If StrComp(Normalize(Txt(ws.Cells(r, c).Value)), dimText, vbTextCompare) = 0 Then
+                col = c: headRow = r: NodeColumn = True
+                Exit Function
+            End If
+        Next c
+    Next r
+    lastMessage = "the crosstab of " & ds & " does not show " & dimension & " (" & dimText & ") in its rows"
+End Function
+
+' Click on the symbol of a node as a user does and wait until AfO has redrawn it.
+' AfO takes the position from the mouse pointer, so the pointer is moved there for the click.
+Private Function ToggleNode(ByVal c As Range) As Boolean
+    Dim before As String: before = NodeState(c)
+    stage = "show sheet"
+    c.Worksheet.Parent.Activate
+    c.Worksheet.Activate
+    If Application.WindowState = xlMinimized Or ActiveWindow.WindowState = xlMinimized Then lastMessage = "the Excel window is minimized; a node can only be clicked in a visible window": Exit Function
+    stage = "scroll"
+    If Intersect(ActiveWindow.VisibleRange, c) Is Nothing Then
+        ActiveWindow.ScrollRow = Application.Max(1, c.Row - 2)
+        ActiveWindow.ScrollColumn = Application.Max(1, c.Column - 1)
+    End If
+    stage = "pane"
+    ' The pane that shows the cell (frozen panes); Panes has no enumerator, hence the index.
+    Dim i As Long, p As Object: Set p = ActiveWindow.ActivePane
+    For i = 1 To ActiveWindow.Panes.Count
+        If Not Intersect(ActiveWindow.Panes(i).VisibleRange, c) Is Nothing Then Set p = ActiveWindow.Panes(i)
+    Next i
+    ' The symbol sits at the left edge of the cell: AfO counts the indentation in.
+    stage = "position"
+    Dim pt As PointApi
+    pt.x = p.PointsToScreenPixelsX(c.Left) + 3
+    pt.y = p.PointsToScreenPixelsY(c.Top + c.Height / 2)
+    Dim found As Object
+    On Error Resume Next
+    Set found = ActiveWindow.RangeFromPoint(pt.x, pt.y)
+    On Error GoTo 0
+    Dim onCell As Boolean
+    If Not found Is Nothing Then
+        If TypeName(found) = "Range" Then onCell = (found.Address = c.Address And found.Worksheet.Name = c.Worksheet.Name)
+    End If
+    If Not onCell Then lastMessage = "cell " & c.Address(False, False) & " is not where Excel shows it (zoom, or another window over it?)": Exit Function
+    stage = "window"
+    Dim wnd As LongPtr: wnd = FindWindowExA(Application.Hwnd, 0, "XLDESK", vbNullString)
+    If wnd <> 0 Then wnd = FindWindowExA(wnd, 0, "EXCEL7", vbNullString)
+    If wnd = 0 Then lastMessage = "workbook window not found": Exit Function
+    stage = "click"
+    Dim old As PointApi: GetCursorPos old
+    SetCursorPos pt.x, pt.y
+    Dim client As PointApi: client = pt
+    ScreenToClient wnd, client
+    Dim lp As LongPtr: lp = CLngPtr(client.y) * &H10000 + (client.x And &HFFFF&)
+    PostMessageA wnd, &H201, 1, lp
+    PostMessageA wnd, &H202, 0, lp
+    DoEvents
+    SetCursorPos old.x, old.y
+    stage = "wait"
+    Dim started As Single: started = Timer
+    Do
+        DoEvents
+        If NodeState(c) <> before Then ToggleNode = True: Exit Function
+    Loop While Abs(Timer - started) < 20
+    lastMessage = "Analysis for Office did not react to the click on " & c.Address(False, False)
+End Function
+
+Private Sub RestoreSheet(ByVal back As Worksheet)
+    On Error Resume Next
+    If Not ActiveSheet Is back Then back.Parent.Activate: back.Activate
+End Sub
 
 ' Any AfO API function: API SAPFunction arg1|arg2|... (up to 10 arguments).
 Private Function DoApi(ByVal rest As String) As Boolean

@@ -283,6 +283,16 @@ test('agentBridge adds the bridge sheet, defined names, the AfoAgent module and 
   assert.match(agent, /If InStr\(cmd, vbLf\) > 0 Then steps = Split\(cmd, vbLf\) Else steps = Split\(cmd, ";"\)/);
   assert.match(agent, /v = RangeKeys\(Mid\$\(v, 2\)\)/);
   assert.match(sheet, /FILTERWHERE DS_1 DIMENSION &quot;Key figure&quot; &gt;= 100000/);
+  // Hierarchy navigation: a click on the node symbol, since the AfO API has no function for it.
+  assert.match(agent, /Case "EXPAND": RunOne = DoNode\(rest, True\)/);
+  assert.match(agent, /Case "COLLAPSE": RunOne = DoNode\(rest, False\)/);
+  assert.match(agent, /Case "DRILLLEVEL": RunOne = DoDrillLevel\(rest\)/);
+  assert.match(agent, /Private Declare PtrSafe Function SetCursorPos Lib "user32"/);
+  assert.match(agent, /For i = 1 To ActiveWindow\.Panes\.Count/);
+  assert.match(agent, /NodeLevel = i \\ 2/);
+  assert.match(sheet, /EXPAND DS_1 node/);
+  assert.match(sheet, /DRILLLEVEL DS_1 DIMENSION=2/);
+  assert.match(sheet, /Switching a hierarchy on or off/);
   assert.match(sheet, /Never use Excel means on a crosstab: no AutoFilter/);
   assert.match(sheet, /SAPListOfVariables/);
   assert.match(sheet, /<c r="Q1" t="inlineStr"><is><t xml:space="preserve">Data sources \(live\)/);
