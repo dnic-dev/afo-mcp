@@ -5,10 +5,18 @@ A Model Context Protocol (MCP) server that lets AI assistants like Claude work w
 Three parts, each usable on its own:
 
 - **Read** — a workbook or a whole folder, **without Excel and without an SAP logon**: data sources with their saved navigation state, variables, planning functions and sequences, crosstabs, SAP formulas, VBA macros and buttons, and the links between them that are broken.
-- **Build** — new workbooks from a JSON spec, or a new layout for an existing workbook that keeps every AfO feature, **without Excel**: data sources with stored prompts, crosstabs, planning functions, filter components, VBA and button macros, and the **agent bridge** that lets Claude in Excel plan inside the workbook.
+- **Build** — new workbooks from a JSON spec, or a new layout for an existing workbook that keeps every AfO feature, **without Excel**: data sources with stored prompts, crosstabs, planning functions, filter components, VBA and button macros, and the **agent bridge** that lets Claude in Excel — or any AI agent that writes cells through Office.js — plan inside the workbook.
 - **Operate** — on a Windows machine with Excel and AfO: open a workbook or an **ad-hoc report for any query**, logged on, with variables set and the data refreshed.
 
 **Reading and building only touch files.** Nothing reaches a BW system until a workbook is opened in Excel with Analysis for Office — by the user, or by the operate tools on the user's own machine.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dnic-dev/afo-mcp/main/docs/agentic-planning-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dnic-dev/afo-mcp/main/docs/agentic-planning-light.png">
+    <img src="https://raw.githubusercontent.com/dnic-dev/afo-mcp/main/docs/agentic-planning-light.png" alt="Who does what: at design time bw-modeling-mcp builds the planning model in SAP BW/4HANA and afo-mcp builds the Analysis for Office workbook offline; at run time Claude in Excel, or any AI using Office.js, plans inside the workbook through the agent bridge and the skill" width="100%">
+  </picture>
+</p>
 
 ---
 
@@ -29,9 +37,10 @@ Three parts, each usable on its own:
 - `afo_update_workbook` — store variable values, add planning functions, retrofit the agent
   bridge, add VBA modules, keeping everything else
 
-**🤖 Agentic planning with Claude in Excel**
+**🤖 Agentic planning with Claude in Excel or any Office.js agent**
 
-- The **agent bridge**: a command cell through which Claude in Excel writes plan values that AfO
+- The **agent bridge**: a command cell through which Claude in Excel, or any AI agent working
+  through Office.js, writes plan values that AfO
   accepts, runs planning functions, sets variables and filters, and saves — commands any agent
   can learn from the help on the bridge sheet
 
@@ -61,9 +70,9 @@ Every tool in detail — parameters, behaviour, and how the tools combine — is
 | **Operate** | `afo_open_workbook` — open a workbook logged on, with variables and fresh data | yes (Windows) |
 | | `afo_quick_report` — ad-hoc report for one or more queries, opened logged on | yes (Windows) |
 
-### Agentic planning with Claude in Excel
+### Agentic planning with Claude in Excel or any Office.js agent
 
-Claude in Excel writes cells through Office.js, and Analysis for Office does not register such writes as user input — a plan value typed by the agent is silently ignored. The **agent bridge** closes that gap. `afo_build_workbook` and `afo_update_workbook` add a bridge sheet with a command cell; the agent writes a command such as `SET Plan!E12=1500` or `PLAN PF_1` into it, and VBA in the workbook carries it out as a user would. AfO messages are logged after every step, and a rejected value fails the step.
+Claude in Excel writes cells through Office.js, as other AI add-ins for Excel do, and Analysis for Office does not register such writes as user input — a plan value typed by the agent is silently ignored. The **agent bridge** closes that gap, for any agent that can write a cell: it is plain Excel and VBA, not tied to one assistant. `afo_build_workbook` and `afo_update_workbook` add a bridge sheet with a command cell; the agent writes a command such as `SET Plan!E12=1500` or `PLAN PF_1` into it, and VBA in the workbook carries it out as a user would. AfO messages are logged after every step, and a rejected value fails the step.
 
 | Command | What it does |
 |---|---|
@@ -80,7 +89,7 @@ Claude in Excel writes cells through Office.js, and Analysis for Office does not
 
 Reading needs no command: the bridge sheet explains the AfO read formulas and keeps live lists of data sources, planning objects and messages.
 
-**The skill for Claude in Excel.** [`skills/afo-agentic-planning`](skills/afo-agentic-planning/SKILL.md) tells Claude in Excel how to recognise an AfO workbook, find the bridge, read the workbook's queries and planning objects through AfO formulas, and when to ask before acting. Claude in Excel uses the skills of the claude.ai account it is signed in with: add the folder there as a skill.
+**The skill for Claude in Excel.** [`skills/afo-agentic-planning`](skills/afo-agentic-planning/SKILL.md) tells Claude in Excel how to recognise an AfO workbook, find the bridge, read the workbook's queries and planning objects through AfO formulas, and when to ask before acting. Claude in Excel uses the skills of the claude.ai account it is signed in with: add the folder there as a skill. Other agents need no skill to start: the help on the bridge sheet lists every command, and the skill's text works as instructions for them too.
 
 ---
 
@@ -90,7 +99,7 @@ Reading needs no command: the bridge sheet explains the AfO read formulas and ke
 
 - A spec needs facts from BW — the variables of a query and their valid values, the characteristics of an aggregation level, the runtime UID of a key figure structure. bw-modeling-mcp delivers them (`bw_get_query`, `bw_get_filter_values`, `bw_get_aggregation_level`, `bw_query_data`); afo-mcp has no BW access of its own.
 - Workbooks stored in BW are fetched and saved by bw-modeling-mcp (`bw_list_afo_workbooks`, `bw_get_afo_workbook`, `bw_save_afo_workbook`) and read, changed or rebuilt here in between.
-- A planning model built with bw-modeling-mcp — aggregation level, planning functions, sequence — becomes a planning workbook here, with the agent bridge for Claude in Excel.
+- A planning model built with bw-modeling-mcp — aggregation level, planning functions, sequence — becomes a planning workbook here, with the agent bridge for Claude in Excel or any other Office.js agent.
 
 ---
 
