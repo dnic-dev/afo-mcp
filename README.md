@@ -159,9 +159,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the file format, the build pipeline, 
 
 The plan is in [docs/ROADMAP.md](docs/ROADMAP.md); open work is tracked as [issues](https://github.com/dnic-dev/afo-mcp/issues). Next up:
 
-- **Planning parcours** — hierarchies, data slices, characteristic relationships, sequences and new lines, tested end to end
+- **Planning parcours** — input on hierarchy nodes, data slices, characteristic relationships, sequences and new lines, tested end to end
 - **Describe, not only take over** — filters with hierarchy nodes, design rules and planning sequences in the spec
-- **The agent bridge as an Excel add-in** — every AfO workbook operable by an agent without changing it
+
+Ideas for later:
+
+- **The agent bridge as an Excel add-in** — installed once per user instead of built into each workbook, so any AfO workbook, including existing ones, can be operated by an agent without changing the file
 
 ---
 
