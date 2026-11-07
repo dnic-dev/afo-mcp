@@ -167,9 +167,12 @@ on it built with afo-mcp, to prove the bridge generic case by case:
 - [x] Filters in the spec: members, intervals, comparisons, exclusions (`filters` on a data
       source, also in `afo_quick_report`). *(Live: AfO takes members and exclusions over as
       effective filters.)*
-- [ ] Describe in the spec (for workbooks designed from scratch): filters on hierarchy nodes
-      (need the hierarchy on the characteristic); design rules; display per characteristic;
-      planning function filter references.
+- [x] Hierarchies in the stored state (`hierarchies` with the levels expanded, `compactRows` for
+      the compact display of rows) in `afo_build_workbook`, `afo_update_workbook` and
+      `afo_quick_report` (#15). *(Live on our BW test system: built and retrofitted workbooks open with the
+      hierarchy on the given level; the bridge navigates in them.)*
+- [ ] Describe in the spec (for workbooks designed from scratch): filters on hierarchy nodes;
+      display per characteristic (key/text, totals); planning function filter references.
 
 ### D2. Workbooks stored in BW (in bw-modeling-mcp, using the afo-mcp parser as a library)
 

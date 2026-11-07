@@ -90,6 +90,25 @@ const FILTERS_SCHEMA = {
   },
 } as const;
 
+const HIERARCHIES_SCHEMA = {
+  type: 'array',
+  description: 'BW hierarchies shown when the workbook opens, written into the stored state of the data source (switching a hierarchy on has no AfO API function, so the bridge cannot do it at run time). bw_get_hierarchy lists the hierarchies of a characteristic.',
+  items: {
+    type: 'object',
+    properties: {
+      characteristic: { type: 'string', description: 'Technical name of the characteristic.' },
+      hierarchy: { type: ['string', 'null'], description: 'Technical name of the hierarchy; null shows the characteristic flat.' },
+      drillLevel: { type: 'number', description: 'Levels expanded on open: 1 = top nodes only (default 2).' },
+    },
+    required: ['characteristic', 'hierarchy'],
+  },
+} as const;
+
+const COMPACT_ROWS_SCHEMA = {
+  description: 'Compact display of rows: the characteristics in the rows shown as one tree with [+]/[-] (a virtual hierarchy). true, false, or { drillLevel } (levels expanded on open, 1 = first characteristic only, the default). Needs the rows in the stored layout.',
+  anyOf: [{ type: 'boolean' }, { type: 'object', properties: { drillLevel: { type: 'number' } } }],
+} as const;
+
 const PLANNING_FUNCTIONS_SCHEMA = {
               type: 'array',
               items: {
@@ -208,7 +227,7 @@ const TOOLS = [
   {
     name: 'afo_build_workbook',
     description:
-      'Write a new Analysis for Office workbook without Excel: data sources on BW queries with stored prompts, axes and input readiness; crosstabs at given cells; planning functions bound to a data source with aggregation level, fixed filter values, stored variables and variables read from cells; VBA modules and button macros. The base is either a layout template (.xlsx/.xlsm with the sheets, texts, formats and the shapes used as buttons) or a generated minimal layout (sheets plus optional cell values and defined names, no buttons). The spec is checked first and every problem is reported at once; nothing is written then. After writing, the file is read back and broken links are returned as issues. The workbook opens in Excel with AfO, which asks for the logon; refresh and planning need that step.',
+      'Write a new Analysis for Office workbook without Excel: data sources on BW queries with stored prompts, axes, filters, hierarchies (with the levels expanded) and input readiness; crosstabs at given cells; planning functions bound to a data source with aggregation level, fixed filter values, stored variables and variables read from cells; VBA modules and button macros. The base is either a layout template (.xlsx/.xlsm with the sheets, texts, formats and the shapes used as buttons) or a generated minimal layout (sheets plus optional cell values and defined names, no buttons). The spec is checked first and every problem is reported at once; nothing is written then. After writing, the file is read back and broken links are returned as issues. The workbook opens in Excel with AfO, which asks for the logon; refresh and planning need that step.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -286,6 +305,8 @@ const TOOLS = [
                     },
                   },
                   filters: FILTERS_SCHEMA,
+                  hierarchies: HIERARCHIES_SCHEMA,
+                  compactRows: COMPACT_ROWS_SCHEMA,
                   designRules: {
                     type: 'object',
                     description: 'Formatting rules (Analysis Design, Format Cells): a cell style per structure member (BW element UIDs), stored in the data source state as AfO does. E.g. one colour per data source column.',
@@ -360,7 +381,7 @@ const TOOLS = [
   {
     name: 'afo_update_workbook',
     description:
-      'Change an existing Analysis for Office workbook without Excel instead of rebuilding it: store prompt values (the workbook then opens in that selection without the prompt dialog), switch refresh on open, add planning functions to its AfO definition (bound to a data source already in the workbook), retrofit the agent bridge so Claude in Excel can operate it, add VBA modules. Layout, cells, data sources, crosstabs and existing macros stay as they are; existing Workbook_Open/Workbook_SheetCalculate handlers get one call added. Writes a new file (output), never the input; the workbook must be closed in Excel. Everything is checked first and every problem reported at once. Signed VBA projects are refused. Warnings name variables that still have no stored value.',
+      'Change an existing Analysis for Office workbook without Excel instead of rebuilding it: store prompt values (the workbook then opens in that selection without the prompt dialog), switch refresh on open, add planning functions to its AfO definition (bound to a data source already in the workbook), retrofit the agent bridge so Claude in Excel can operate it, add VBA modules, show BW hierarchies or the compact display of rows on open (hierarchies, compactRows). Layout, cells, data sources, crosstabs and existing macros stay as they are; existing Workbook_Open/Workbook_SheetCalculate handlers get one call added. Writes a new file (output), never the input; the workbook must be closed in Excel. Everything is checked first and every problem reported at once. Signed VBA projects are refused. Warnings name variables that still have no stored value.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -381,6 +402,16 @@ const TOOLS = [
         planningFunctions: PLANNING_FUNCTIONS_SCHEMA,
         agentBridge: AGENT_BRIDGE_SCHEMA,
         vbaModules: VBA_MODULES_SCHEMA,
+        hierarchies: {
+          type: 'object',
+          description: 'BW hierarchies to show on open, by data source key: { "DS_1": [{ "characteristic": "CHAR", "hierarchy": "HIER", "drillLevel": 2 }] }. Nodes opened or closed by hand in the saved state are reset for that characteristic.',
+          additionalProperties: HIERARCHIES_SCHEMA,
+        },
+        compactRows: {
+          type: 'object',
+          description: 'Compact display of rows by data source key: { "DS_1": true } or { "DS_1": { "drillLevel": 2 } }; false switches it off.',
+          additionalProperties: COMPACT_ROWS_SCHEMA,
+        },
         system: {
           type: 'object',
           description: 'Point the workbook to another system, e.g. from development to quality or production, or after a system move: every data source and planning object gets the new connection. Either systemId (an entry of the SAP Logon landscape of this machine: server, system number, SAProuter and SNC as there; client and language default to the workbook\'s) or from (copy the connection of a reference workbook).',
@@ -431,7 +462,7 @@ const TOOLS = [
   {
     name: 'afo_quick_report',
     description:
-      'Ad-hoc report for one BW query: writes a plain .xlsx (no macros, so no security bar) with the query in a crosstab and the given prompt values stored, connected the way the SAP Logon landscape of this machine connects to the system (server, SAProuter, SNC), and opens it in Excel logged on with the data (credentials of this server, as afo_open_workbook). Needs Windows, Excel and Analysis for Office. Give values for all mandatory variables (internal keys; bw_get_query lists the variables, bw_get_filter_values the valid keys), otherwise AfO shows the prompt dialog.',
+      'Ad-hoc report for one BW query: writes a plain .xlsx (no macros, so no security bar) with the query in a crosstab and the given prompt values, layout, filters and hierarchies stored, connected the way the SAP Logon landscape of this machine connects to the system (server, SAProuter, SNC), and opens it in Excel logged on with the data (credentials of this server, as afo_open_workbook). Needs Windows, Excel and Analysis for Office. Give values for all mandatory variables (internal keys; bw_get_query lists the variables, bw_get_filter_values the valid keys), otherwise AfO shows the prompt dialog.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -446,6 +477,8 @@ const TOOLS = [
           properties: { rows: { type: 'array', items: { type: 'string' } }, columns: { type: 'array', items: { type: 'string' } }, free: { type: 'array', items: { type: 'string' } } },
         },
         filters: FILTERS_SCHEMA,
+        hierarchies: HIERARCHIES_SCHEMA,
+        compactRows: COMPACT_ROWS_SCHEMA,
         folder: { type: 'string', description: 'Folder for the workbook (default Documents\AfO Reports).' },
         open: { type: 'boolean', description: 'Open it in Excel logged on (default true); false only writes the file.' },
         timeoutSeconds: { type: 'number', description: 'Overall timeout for opening (default 900).' },
@@ -530,6 +563,8 @@ function runTool(name: string, args: Args): unknown {
           agentBridge: args.agentBridge as UpdateOperations['agentBridge'],
           vbaModules: args.vbaModules as UpdateOperations['vbaModules'],
           system: typeof args.system === 'object' && args.system !== null ? (args.system as UpdateOperations['system']) : undefined,
+          hierarchies: typeof args.hierarchies === 'object' && args.hierarchies !== null ? (args.hierarchies as UpdateOperations['hierarchies']) : undefined,
+          compactRows: typeof args.compactRows === 'object' && args.compactRows !== null ? (args.compactRows as UpdateOperations['compactRows']) : undefined,
         },
         {
           input: str(args, 'input'),

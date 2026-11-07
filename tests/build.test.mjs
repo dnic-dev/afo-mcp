@@ -495,7 +495,6 @@ test('VBA modules and sheet module code are taken over from the source workbook,
 
 const fixture = await import('./_fixture.mjs');
 const { withStoredPrompts, moveRanges } = await import('../dist/build/afo.js');
-const { decodeCompressed } = await import('../dist/workbook/bics.js');
 
 const count = (s, re) => (s.match(re) ?? []).length;
 const sheetData = (xml) => /<sheetData[\s\S]*?<\/sheetData>|<sheetData\s*\/>/.exec(xml)[0];
@@ -728,4 +727,66 @@ test('designRules area LAST_AREA colours the data cells only', () => withDir((di
   const dp = keyedElement(readSourceDefinition(output), 'DataProvider', 'DS_1');
   const state = decodeCompressed(/<BICS_VIEW_HEADER compressed="true">([^<]*)</.exec(dp)[1]);
   assert.match(state, /name="EXCEL_GOOD" \/><RANGE><AREA>LAST_AREA<\/AREA>/);
+}));
+
+const { setStateHierarchies } = await import('../dist/build/hierarchy.js');
+const { decodeCompressed } = await import('../dist/workbook/bics.js');
+const storedState = (file, key = 'DS_1') => decodeCompressed(/<BICS_VIEW_HEADER compressed="true">([^<]*)</.exec(keyedElement(readSourceDefinition(file), 'DataProvider', key))[1]);
+
+test('hierarchies and the compact display of rows are written into the stored state as AfO saves them', () => withDir((dir) => {
+  const output = join(dir, 'hier.xlsx');
+  buildWorkbook({
+    ...MINIMAL_SPEC, vbaModules: undefined, planningFunctions: undefined,
+    dataProviders: [{
+      key: 'DS_1', query: 'QUERY_NAME', axes: { rows: ['CHAR_A', 'CHAR_B'], columns: ['STRUCTURE_UID'] },
+      filters: [{ characteristic: 'CHAR_A', members: ['A1'] }],
+      hierarchies: [{ characteristic: 'CHAR_A', hierarchy: 'HIER_A', drillLevel: 3 }, { characteristic: 'CHAR_C', hierarchy: 'HIER_C' }],
+      compactRows: { drillLevel: 2 },
+    }],
+  }, { output });
+  assert.deepEqual(readWorkbook(output).dataProviders[0].state.hierarchies, [
+    { characteristic: 'CHAR_A', hierarchy: 'HIER_A' }, { characteristic: 'CHAR_C', hierarchy: 'HIER_C' },
+  ]);
+  const state = storedState(output);
+  // Levels shown in the spec, levels below the top nodes in the state.
+  assert.match(state, /<\/SELECTION_STATE><CHARACTERISTICS><CHARACTERISTIC name="CHAR_A"><HIERARCHY name="HIER_A" dueDate="00000000"><ACTIVE>true<\/ACTIVE><DRILL_LEVEL>2<\/DRILL_LEVEL>/);
+  assert.match(state, /<CHARACTERISTIC name="CHAR_C"><HIERARCHY name="HIER_C" dueDate="00000000"><ACTIVE>true<\/ACTIVE><DRILL_LEVEL>1<\/DRILL_LEVEL>/);
+  assert.match(state, /<AXIS name="ROWS"><HIERARCHY><ACTIVE>true<\/ACTIVE><DRILL_LEVEL>2<\/DRILL_LEVEL><\/HIERARCHY>/);
+  assert.match(state, /<AXIS name="COLUMNS"><HIERARCHY><ACTIVE>false<\/ACTIVE>/);
+
+  const errors = validateSpec({ ...MINIMAL_SPEC, dataProviders: [{ key: 'DS_1', query: 'Q', hierarchies: [{ characteristic: 'C', hierarchy: '', drillLevel: 0 }, { characteristic: 'C', hierarchy: null }], compactRows: true }] });
+  assert.ok(errors.some((e) => /hierarchy must be a hierarchy name, or null/.test(e)), errors.join('\n'));
+  assert.ok(errors.some((e) => /drillLevel must be a whole number from 1/.test(e)));
+  assert.ok(errors.some((e) => /C appears twice/.test(e)));
+  assert.ok(errors.some((e) => /compactRows needs axes\.rows/.test(e)));
+}));
+
+test('setStateHierarchies replaces the hierarchy of a full saved state and drops its node operations only', () => {
+  const state = '<?xml version="1.0"?><BICS_VIEW version="3.1"><QUERY name="Q" />'
+    + '<SELECTION_STATE><SELECTION><CHARACTERISTICS><CHARACTERISTIC name="CHAR_A"><SELECTIONS /></CHARACTERISTIC></CHARACTERISTICS></SELECTION></SELECTION_STATE>'
+    + '<CHARACTERISTICS><CHARACTERISTIC name="CHAR_A"><VISUALIZATION_LEVEL>DEFAULT</VISUALIZATION_LEVEL><CUSTOM_PARAMETERS /><HIERARCHY name="OLD" dueDate="00000000"><ACTIVE>true</ACTIVE><DRILL_LEVEL>1</DRILL_LEVEL><LEVELS /></HIERARCHY></CHARACTERISTIC>'
+    + '<CHARACTERISTIC name="CHAR_B"><VISUALIZATION_LEVEL>DEFAULT</VISUALIZATION_LEVEL></CHARACTERISTIC></CHARACTERISTICS>'
+    + '<AXES><AXIS name="ROWS"><HIERARCHY><ACTIVE>false</ACTIVE><DRILL_LEVEL>0</DRILL_LEVEL></HIERARCHY><CHARACTERISTICS><CHARACTERISTIC>CHAR_A</CHARACTERISTIC></CHARACTERISTICS></AXIS></AXES>'
+    + '<DRILL_OPERATIONS><DRILL_OPERATION><DRILL_STATE>EXPANDED</DRILL_STATE><PATH><MEMBER name="N1" type="HIERARCHY_NODE" characteristic="CHAR_A" /></PATH></DRILL_OPERATION>'
+    + '<DRILL_OPERATION><DRILL_STATE>EXPANDED</DRILL_STATE><PATH><MEMBER name="N2" type="HIERARCHY_NODE" characteristic="CHAR_Z" /></PATH></DRILL_OPERATION></DRILL_OPERATIONS>'
+    + '<DOCUMENT_APPLICATION_ASSIGNED /></BICS_VIEW>';
+  const out = setStateHierarchies(state, [{ characteristic: 'CHAR_A', hierarchy: 'NEW', drillLevel: 1 }, { characteristic: 'CHAR_B', hierarchy: null }]);
+  assert.match(out, /<CHARACTERISTIC name="CHAR_A"><VISUALIZATION_LEVEL>DEFAULT<\/VISUALIZATION_LEVEL><CUSTOM_PARAMETERS \/><HIERARCHY name="NEW" dueDate="00000000"><ACTIVE>true<\/ACTIVE><DRILL_LEVEL>0<\/DRILL_LEVEL><\/HIERARCHY><\/CHARACTERISTIC>/);
+  assert.match(out, /<CHARACTERISTIC name="CHAR_B"><VISUALIZATION_LEVEL>DEFAULT<\/VISUALIZATION_LEVEL><HIERARCHY><ACTIVE>false<\/ACTIVE>/);
+  // The selection state and the axis keep their own CHARACTERISTICS untouched.
+  assert.match(out, /<SELECTION><CHARACTERISTICS><CHARACTERISTIC name="CHAR_A"><SELECTIONS \/><\/CHARACTERISTIC><\/CHARACTERISTICS><\/SELECTION>/);
+  assert.doesNotMatch(out, /name="N1"/);
+  assert.match(out, /name="N2"/);
+  assert.equal(setStateHierarchies(out, undefined, true).match(/<AXIS name="ROWS"><HIERARCHY><ACTIVE>true<\/ACTIVE><DRILL_LEVEL>1</g)?.length, 1);
+  assert.throws(() => setStateHierarchies('<BICS_VIEW><QUERY name="Q" /></BICS_VIEW>', undefined, true), /needs the axis layout/);
+});
+
+test('updateWorkbook sets hierarchies and the compact display of rows in an existing workbook', () => withDir((dir) => {
+  const input = join(dir, 'existing.xlsx');
+  buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, planningFunctions: undefined, dataProviders: [{ key: 'DS_1', query: 'QUERY_NAME', axes: { rows: ['CHAR_A'] } }] }, { output: input });
+  const output = join(dir, 'hier.xlsx');
+  const r = updateWorkbook({ hierarchies: { DS_1: [{ characteristic: 'CHAR_A', hierarchy: 'HIER_A', drillLevel: 2 }] }, compactRows: { DS_1: false } }, { input, output });
+  assert.deepEqual(r.changes, ['DS_1: CHAR_A hierarchy HIER_A, 2 level(s) shown', 'DS_1: compact display of rows off']);
+  assert.deepEqual(readWorkbook(output).dataProviders[0].state.hierarchies, [{ characteristic: 'CHAR_A', hierarchy: 'HIER_A' }]);
+  assert.throws(() => updateWorkbook({ hierarchies: { DS_9: [{ characteristic: 'C', hierarchy: 'H' }] } }, { input, output: join(dir, 'bad.xlsx') }), /DS_9 is not in the workbook/);
 }));

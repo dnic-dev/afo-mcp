@@ -8,6 +8,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { readWorkbook } from '../workbook/read.js';
 import { type AfoWorkbookSpec, filterProblems, fromA1, makeAfoWorkbook, promptProblems } from './afo.js';
 import { agentSheetName, validateAgentBridge } from './agent.js';
+import { hierarchyProblems } from './hierarchy.js';
 import { applySource, readSourceDefinition } from './source.js';
 
 /** A value written into the generated minimal layout, optionally with a defined name. */
@@ -127,6 +128,7 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
       const v = dp?.axes?.[axis];
       if (v !== undefined && !Array.isArray(v)) errors.push(`${what}.axes.${axis} must be a list of names.`);
     }
+    errors.push(...hierarchyProblems(what, dp?.hierarchies, dp?.compactRows, dp?.from ? undefined : Array.isArray(dp?.axes?.rows) && dp.axes.rows.length > 0));
   });
   grids.forEach((g, i) => {
     const what = `grids[${i}]`;

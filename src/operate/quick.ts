@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { FilterSpec, PromptValue } from '../build/afo.js';
 import { buildWorkbook } from '../build/build.js';
+import type { CompactRowsSpec, HierarchySpec } from '../build/hierarchy.js';
 import { landscapeSystem } from './landscape.js';
 import { logonConfig, openWorkbook } from './open.js';
 
@@ -19,6 +20,10 @@ export interface QuickReportOptions {
   prompts?: PromptValue[];
   axes?: { rows?: string[]; columns?: string[]; free?: string[] };
   filters?: FilterSpec[];
+  /** BW hierarchies shown on open, with the levels expanded. */
+  hierarchies?: HierarchySpec[];
+  /** Compact display of rows (needs axes.rows). */
+  compactRows?: CompactRowsSpec;
   /** Folder for the workbook (default Documents\AfO Reports). */
   folder?: string;
   /** Open in Excel, logged on (default true). */
@@ -47,7 +52,7 @@ export async function quickReport(o: QuickReportOptions, env: NodeJS.ProcessEnv 
     system,
     storePrompts: true,
     refreshOnOpen: false,
-    dataProviders: [{ key: 'DS_1', query: o.query, prompts: prompts.length ? prompts : undefined, axes: o.axes, filters: o.filters?.length ? o.filters : undefined }],
+    dataProviders: [{ key: 'DS_1', query: o.query, prompts: prompts.length ? prompts : undefined, axes: o.axes, filters: o.filters?.length ? o.filters : undefined, hierarchies: o.hierarchies?.length ? o.hierarchies : undefined, compactRows: o.compactRows }],
     grids: [{ key: 'Crosstab1', dataProviderKey: 'DS_1', sheet: 'Report', cell: 'B4' }],
   }, {
     output,

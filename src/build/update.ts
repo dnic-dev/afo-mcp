@@ -14,6 +14,7 @@ import {
   addRels, addVisibility, esc, guid, planningFunction, promptProblems, promptsVisibility, quoteSheet, relXml, stateXml, unstoredPrompts, utf16,
   systemInfo, withStoredPrompts,
 } from './afo.js';
+import { type CompactRowsSpec, type HierarchySpec, hierarchyProblems, withStoredHierarchies } from './hierarchy.js';
 import { firstElement, keyedElement, keyedElements, readSourceDefinition, sourceSystemInfo } from './source.js';
 import { landscapeSystem } from '../operate/landscape.js';
 import {
@@ -43,6 +44,10 @@ export interface UpdateOperations {
   vbaModules?: Array<{ name: string; code?: string; file?: string }>;
   /** Point every data source and planning object to another system. */
   system?: SystemChange;
+  /** BW hierarchies to show on open, by data source key (null as hierarchy: flat display). */
+  hierarchies?: Record<string, HierarchySpec[]>;
+  /** Compact display of rows on or off, by data source key. */
+  compactRows?: Record<string, CompactRowsSpec>;
 }
 
 /**
@@ -124,9 +129,10 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   if (ext !== '.xlsm' && ext !== '.xlsx') throw new Error(`output must end in .xlsx or .xlsm, got ${options.output}.`);
   const prompts = Object.entries(ops.prompts ?? {}).map(([key, input]) => [key, normalizePrompts(input)] as const);
   const storePrompts = ops.storePrompts ?? (prompts.length ? true : undefined);
+  const displayKeys = [...new Set([...Object.keys(ops.hierarchies ?? {}), ...Object.keys(ops.compactRows ?? {})])];
   const refreshOnOpen = ops.refreshOnOpen;
-  if (!prompts.length && storePrompts === undefined && refreshOnOpen === undefined && !ops.planningFunctions?.length && !ops.agentBridge && !ops.vbaModules?.length && !ops.system) {
-    throw new Error('Nothing to do: give prompts, storePrompts, refreshOnOpen, planningFunctions, agentBridge, vbaModules or system.');
+  if (!prompts.length && storePrompts === undefined && refreshOnOpen === undefined && !ops.planningFunctions?.length && !ops.agentBridge && !ops.vbaModules?.length && !ops.system && !displayKeys.length) {
+    throw new Error('Nothing to do: give prompts, storePrompts, refreshOnOpen, planningFunctions, agentBridge, vbaModules, system, hierarchies or compactRows.');
   }
 
   const d = readWorkbook(input, { sections: ['sheets', 'dataProviders', 'planningObjects', 'items', 'macros'] });
@@ -174,6 +180,10 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
     if (!dpKeys.has(key)) errors.push(`prompts.${key}: data source ${key} is not in the workbook. Data sources: ${[...dpKeys].join(', ')}.`);
     if (!list.length) errors.push(`prompts.${key}: no values given.`);
     list.forEach((p, j) => errors.push(...promptProblems(p, `prompts.${key}[${j}]`)));
+  }
+  for (const key of displayKeys) {
+    if (!dpKeys.has(key)) errors.push(`hierarchies/compactRows.${key}: data source ${key} is not in the workbook. Data sources: ${[...dpKeys].join(', ')}.`);
+    errors.push(...hierarchyProblems(key, ops.hierarchies?.[key], ops.compactRows?.[key], undefined));
   }
   if (storePrompts === false && prompts.length) warnings.push('storePrompts is false: the prompt values are written, but AfO ignores them until StorePromptsInDocument is on.');
 
@@ -229,7 +239,7 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   const targets = relTargets(wbRels);
 
   // --- The definition on the hidden sheet: prompts, settings, planning functions.
-  if (ops.planningFunctions?.length || prompts.length || storePrompts !== undefined || refreshOnOpen !== undefined || newSystemInfo) {
+  if (ops.planningFunctions?.length || prompts.length || storePrompts !== undefined || refreshOnOpen !== undefined || newSystemInfo || displayKeys.length) {
     const hidden = [...wb.matchAll(/<sheet [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)].find((m) => m[1] === HIDDEN_SHEET);
     if (!hidden) throw new Error('The AfO definition sheet was not found.');
     const sheetPart = resolvePart('xl/workbook.xml', targets.get(hidden[2])!);
@@ -259,6 +269,22 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
       def = current ? def.replace(current, () => block) : def.replace(/<StyleSetName|<PlanningSystemDesignTime|<DataProviders/, (m) => `${block}${m}`);
       const unstored = unstoredPrompts(keyedElements(def, 'DataProvider'), visibility);
       if (unstored) warnings.push(unstored);
+    }
+    for (const key of displayKeys) {
+      const dpXml = keyedElement(def, 'DataProvider', key)!;
+      const dp = (d.dataProviders ?? []).find((x) => x.key === key)!;
+      const list = ops.hierarchies?.[key];
+      const compact = ops.compactRows?.[key];
+      let r: { xml: string; notes: string[] };
+      try {
+        r = withStoredHierarchies(dpXml, list, compact, () => stateXml({ key, query: dp.dataSource ?? dp.dataSourceName ?? '', inputReady: dp.inputReady ?? false }, day));
+      } catch (err) {
+        throw new Error(`${key}: ${(err as Error).message}`);
+      }
+      def = def.replace(dpXml, () => r.xml);
+      warnings.push(...r.notes.map((n) => `${key}: ${n}.`));
+      for (const h of list ?? []) changes.push(`${key}: ${h.characteristic} ${h.hierarchy === null ? 'flat' : `hierarchy ${h.hierarchy}, ${h.drillLevel ?? 2} level(s) shown`}`);
+      if (compact !== undefined) changes.push(`${key}: compact display of rows ${compact === false ? 'off' : `on${typeof compact === 'object' && compact.drillLevel ? `, ${compact.drillLevel} level(s) shown` : ''}`}`);
     }
     if (storePrompts !== undefined) {
       def = setSetting(def, 'StorePromptsInDocument', storePrompts);

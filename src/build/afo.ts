@@ -13,6 +13,7 @@ import { decodeCompressed } from '../workbook/bics.js';
 import { decodeText, relsPartOf, resolveTarget } from '../workbook/package.js';
 import { AGENT_MODULE, AGENT_NAMES, type AgentBridgeSpec, agentModuleCode, agentSheetName, agentSheetXml, agentThisWorkbookCode } from './agent.js';
 import { writeCells } from './cells.js';
+import { type CompactRowsSpec, type HierarchySpec, setStateHierarchies, withStoredHierarchies } from './hierarchy.js';
 import { firstElement, keyedElement, replaceFirstKey, sourceSystemInfo } from './source.js';
 import { writeVbaProject, type VbaModuleSource } from './vba.js';
 
@@ -70,6 +71,13 @@ export interface DataProviderSpec {
    * stores them in the data source state. Keys are BW element UIDs.
    */
   designRules?: DesignRulesSpec;
+  /**
+   * BW hierarchies shown on open, per characteristic, with the levels expanded. Switching a
+   * hierarchy on has no AfO API function; the stored state is the way to have it.
+   */
+  hierarchies?: HierarchySpec[];
+  /** Compact display of rows: the characteristics in the rows shown as one tree. Needs axes.rows. */
+  compactRows?: CompactRowsSpec;
 }
 
 /** Cell styles for members of one structure, applied to the member and its data cells. */
@@ -470,7 +478,7 @@ function axesXml(axes: DataProviderSpec['axes']): string {
  * system without document storage that ends in an exception once the crosstab is input-ready.
  */
 export function stateXml(dp: DataProviderSpec, day: string): string {
-  return `<?xml version="1.0" encoding="UTF-8" standalone="no" ?><BICS_VIEW version="3.1"><SERVICE_DESCRIPTION><DATA_AREA>DEFAULT</DATA_AREA><QUERY>${esc(dp.query)}</QUERY></SERVICE_DESCRIPTION>`
+  const state = `<?xml version="1.0" encoding="UTF-8" standalone="no" ?><BICS_VIEW version="3.1"><SERVICE_DESCRIPTION><DATA_AREA>DEFAULT</DATA_AREA><QUERY>${esc(dp.query)}</QUERY></SERVICE_DESCRIPTION>`
     + (dp.designRules ? `<MODULES>${tableDesignXml(dp.designRules)}</MODULES>` : '<MODULES />')
     + (dp.infoProvider ? `<INFO_PROVIDER name="${esc(dp.infoProvider)}" />` : '')
     + `<QUERY name="${esc(dp.query)}"><DUE_DATE>${day}</DUE_DATE></QUERY>`
@@ -479,6 +487,7 @@ export function stateXml(dp: DataProviderSpec, day: string): string {
     + (dp.inputReady ?? true ? '<IS_INPUT_ENABLED>true</IS_INPUT_ENABLED>' : '')
     + axesXml(dp.axes)
     + `<DOCUMENT_APPLICATION_ASSIGNED /></BICS_VIEW>`;
+  return dp.hierarchies?.length || dp.compactRows !== undefined ? setStateHierarchies(state, dp.hierarchies, dp.compactRows) : state;
 }
 
 /** #RRGGBB as the signed 32-bit ARGB integer AfO stores colours as. */
@@ -542,10 +551,18 @@ export function buildDefinition(spec: AfoWorkbookSpec, sheetIds: Map<string, str
         ? xml.replace(/<RefreshDataEntryEnabled>[^<]*<\/RefreshDataEntryEnabled>/, entry)
         : xml.replace(/(<\/FillableNumber>)/, `$1${entry}`);
     }
-    if (!dp.prompts?.length) return xml;
-    const r = withStoredPrompts(xml, dp.prompts, () => stateXml({ ...dp, prompts: undefined, axes: undefined }, day));
-    warnings.push(...r.notes.map((n) => `${dp.key}: ${n}.`));
-    return r.xml;
+    const minimal = () => stateXml({ ...dp, prompts: undefined, axes: undefined, hierarchies: undefined, compactRows: undefined }, day);
+    if (dp.prompts?.length) {
+      const r = withStoredPrompts(xml, dp.prompts, minimal);
+      warnings.push(...r.notes.map((n) => `${dp.key}: ${n}.`));
+      xml = r.xml;
+    }
+    if (dp.hierarchies?.length || dp.compactRows !== undefined) {
+      const r = withStoredHierarchies(xml, dp.hierarchies, dp.compactRows, minimal);
+      warnings.push(...r.notes.map((n) => `${dp.key}: ${n}.`));
+      xml = r.xml;
+    }
+    return xml;
   };
   const dpXml = spec.dataProviders.map((dp) => dp.from
     ? takenDataProvider(dp)

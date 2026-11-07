@@ -116,7 +116,9 @@ are recognisable by their cell style (input-ready styles, typically highlighted)
 - **Hierarchy not shown:** switching a hierarchy on or off and the compact display of rows have
   no AfO API function. They come from the query or the state saved with the workbook. Ask the
   user to switch it in Analysis for Office (right-click the characteristic → Hierarchy, or
-  Analysis → Hierarchy → Compact Display in Rows), or to have the workbook saved that way.
+  Analysis → Hierarchy → Compact Display in Rows), or to have the workbook saved that way. For
+  a lasting change the workbook can be prepared with afo-mcp (`afo_update_workbook` with
+  `hierarchies` or `compactRows`), outside Excel.
 - **Hierarchy commands move the mouse pointer.** Analysis for Office reads the click position
   from the pointer, so the bridge puts it on the node symbol for a moment and back; if Excel is
   behind another window, the pointer visibly jumps across it. The Excel window must not be
