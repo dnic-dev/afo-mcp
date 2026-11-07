@@ -125,6 +125,9 @@ to cover what a planner can do in AfO with keyboard and mouse.
 A deliberately varied test model on our own BW system, built with bw-modeling-mcp, and a workbook
 on it built with afo-mcp, to prove the bridge generic case by case:
 
+*(Later: data slices and characteristic relationships need create tools in bw-modeling-mcp
+first.)*
+
 - [ ] hierarchy with input on nodes (top-down disaggregation)
 - [ ] data slice that locks part of the data
 - [ ] characteristic relationship that rejects invalid combinations
