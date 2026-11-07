@@ -12,9 +12,9 @@ Three parts, each usable on its own:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dnic-dev/afo-mcp/main/docs/agentic-planning-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dnic-dev/afo-mcp/main/docs/agentic-planning-light.png">
-    <img src="https://raw.githubusercontent.com/dnic-dev/afo-mcp/main/docs/agentic-planning-light.png" alt="Who does what: at design time bw-modeling-mcp builds the planning model in SAP BW/4HANA and afo-mcp builds the Analysis for Office workbook offline; at run time Claude in Excel, or any AI using Office.js, plans inside the workbook through the agent bridge and the skill" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/agentic-planning-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/agentic-planning-light.png">
+    <img src="docs/agentic-planning-light.png" alt="Who does what: at design time bw-modeling-mcp builds the planning model in SAP BW/4HANA and afo-mcp builds the Analysis for Office workbook offline; at run time Claude in Excel, or any AI using Office.js, plans inside the workbook through the agent bridge and the skill" width="100%">
   </picture>
 </p>
 
