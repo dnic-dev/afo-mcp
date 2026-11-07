@@ -12,7 +12,7 @@ Three parts, each usable on its own:
 
 ---
 
-## 🆕 What's New — v0.1.0 · First release
+## 🆕 What's New — v1.0.0 · First release
 
 **📖 Read workbooks without Excel**
 

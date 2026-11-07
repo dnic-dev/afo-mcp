@@ -1,6 +1,6 @@
 {
   "name": "afo-mcp",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "MCP server for SAP Analysis for Office workbooks",
   "type": "module",
   "main": "dist/index.js",
@@ -10,16 +10,14 @@
   "files": [
     "dist/",
     "README.md",
+    "TOOLS.md",
+    "ARCHITECTURE.md",
+    "WHATS_NEW.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=22.0.0"
-  },
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/stdio.js",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.mjs"
   },
   "keywords": [
     "sap",
@@ -29,6 +27,17 @@
     "mcp",
     "model-context-protocol"
   ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/stdio.js",
+    "dev": "tsc && node dist/stdio.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dnic-dev/afo-mcp.git"
+  },
   "author": "David Nicolay",
   "license": "MIT",
   "dependencies": {

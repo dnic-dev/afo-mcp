@@ -11,3 +11,6 @@ samples/
 # Local working notes and handovers: they name customers and systems.
 playbooks/
 skills/*.zip
+
+# Instructions for coding agents working on this repository.
+CLAUDE.md
