@@ -209,6 +209,25 @@ test('buildWorkbook uses a template and finds the button shapes in it', () => wi
   assert.throws(() => buildWorkbook({ ...SPEC, grids: [{ key: 'Crosstab1', dataProviderKey: 'DS_1', sheet: 'Other', cell: 'A1' }] }, { output: join(dir, 'x.xlsm'), template }), /Sheet\(s\) not in the template: Other\. Template sheets: Plan Sheet\./);
 }));
 
+test('a template written by openpyxl (Target before Id, r prefix per sheet, empty definedNames) is accepted', () => withDir((dir) => {
+  const template = join(dir, 'openpyxl.xlsx');
+  const ns = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  writeFileSync(template, zipSync({
+    '[Content_Types].xml': strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'),
+    '_rels/.rels': strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Type="${ns}/officeDocument" Target="xl/workbook.xml" Id="rId1"/></Relationships>`),
+    'xl/workbook.xml': strToU8(`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><workbookPr/><bookViews><workbookView/></bookViews><sheets><sheet xmlns:r="${ns}" name="Plan Sheet" sheetId="1" state="visible" r:id="rId1"/></sheets><definedNames/><calcPr calcId="124519"/></workbook>`),
+    'xl/_rels/workbook.xml.rels': strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Type="${ns}/worksheet" Target="/xl/worksheets/sheet1.xml" Id="rId1"/></Relationships>`),
+    'xl/worksheets/sheet1.xml': strToU8('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>'),
+  }));
+  const output = join(dir, 'built.xlsx');
+  const result = buildWorkbook({ ...MINIMAL_SPEC, vbaModules: undefined, planningFunctions: undefined }, { output, template });
+  assert.deepEqual(result.issues, []);
+  const wb = strFromU8(unzipSync(readFileSync(output))['xl/workbook.xml']);
+  assert.match(wb, /^<workbook xmlns:r="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships" /);
+  assert.equal(wb.match(/<definedNames/g).length, 1);
+  assert.match(wb, /<sheet name="_com\.sap\.ip\.bi\.xl\.hiddensheet" sheetId="900" state="veryHidden" r:id="rIdAfoSheet"\/>/);
+}));
+
 test('buildWorkbook refuses to overwrite unless asked and reads VBA from files', () => withDir((dir) => {
   const output = join(dir, 'out.xlsm');
   writeFileSync(join(dir, 'Module1.bas'), '﻿Public Sub Run()\r\n    Application.Run "SAPExecutePlanningFunction", "PF_1"\r\nEnd Sub\r\n');
@@ -280,7 +299,7 @@ test('agentBridge adds the bridge sheet, defined names, the AfoAgent module and 
   // Filters as Analysis for Office filters: several values, values from a range, by key figure value.
   assert.match(agent, /Case "FILTERWHERE": RunOne = DoFilterWhere\(rest\)/);
   assert.match(agent, /Case "UNFILTER": RunOne = DoUnfilter\(rest\)/);
-  assert.match(agent, /If InStr\(cmd, vbLf\) > 0 Then steps = Split\(cmd, vbLf\) Else steps = Split\(cmd, ";"\)/);
+  assert.match(agent, /If InStr\(cmd, vbLf\) > 0 Or UCase\$\(Left\$\(LTrim\$\(cmd\), 8\)\) = "SETDATA " Then steps = Split\(cmd, vbLf\) Else steps = Split\(cmd, ";"\)/);
   assert.match(agent, /v = RangeKeys\(Mid\$\(v, 2\)\)/);
   assert.match(sheet, /FILTERWHERE DS_1 DIMENSION &quot;Key figure&quot; &gt;= 100000/);
   // Hierarchy navigation: a click on the node symbol, since the AfO API has no function for it.
@@ -292,6 +311,21 @@ test('agentBridge adds the bridge sheet, defined names, the AfoAgent module and 
   assert.match(agent, /NodeLevel = i \\ 2/);
   assert.match(sheet, /EXPAND DS_1 node/);
   assert.match(sheet, /DRILLLEVEL DS_1 DIMENSION=2/);
+  // Navigation, plan values by member combination, change mode, new lines, the dialog guard.
+  assert.match(agent, /Case "MOVE": RunOne = DoMove\(rest\)/);
+  assert.match(agent, /DoMove = Check\(Application\.Run\("SAPMoveDimension", ds, dimension, action, other\)\)/);
+  assert.match(agent, /Case "SETDATA": RunOne = DoSetData\(rest\)/);
+  assert.match(agent, /cell\.Formula = "=SAPSetData\(" & Quoted\(ds\) & "," & v & ",,"  & Quoted\(measure\)/);
+  assert.match(agent, /Case "CHANGEMODE": RunOne = DoMode\(rest, "PlanDataToChangeMode"\)/);
+  assert.match(agent, /Case "DISPLAYMODE": RunOne = DoMode\(rest, "PlanDataToDisplayMode"\)/);
+  assert.match(agent, /Application\.Run\("SAPExecuteCommand", "NumberOfNewLines", /);
+  assert.match(agent, /Application\.Run "SAPSetRefreshBehaviour", refreshMode, IIf\(quietOn, "Off", "On"\)/);
+  assert.match(agent, /target\.Value = "'" & Mid\$\(v, 2, Len\(v\) - 2\)/);
+  assert.match(sheet, /MOVE DS_1 DIMENSION=ROWS/);
+  assert.match(sheet, /SETDATA DS_1 Key figure\|DIM=key;DIM=key\|value/);
+  assert.match(sheet, /NEWLINES Crosstab1 5/);
+  assert.match(sheet, /CHANGEMODE DS_1/);
+  assert.match(sheet, /Analysis for Office shows no message windows/);
   assert.match(sheet, /Switching a hierarchy on or off/);
   assert.match(sheet, /Never use Excel means on a crosstab: no AutoFilter/);
   assert.match(sheet, /SAPListOfVariables/);
@@ -689,6 +723,45 @@ test('stored filters: members, intervals, comparisons and exclusions read back a
     (e) => /exactly one of members/.test(e.message) && /operator and value go together/.test(e.message));
 }));
 
+test('filters on hierarchy nodes are stored as AfO saves them and need the hierarchy', () => withDir((dir) => {
+  const output = join(dir, 'nodes.xlsx');
+  buildWorkbook({
+    ...MINIMAL_SPEC, vbaModules: undefined, planningFunctions: undefined,
+    dataProviders: [{
+      key: 'DS_1', query: 'QUERY_NAME',
+      hierarchies: [{ characteristic: 'CHAR_A', hierarchy: 'HIER_A' }],
+      filters: [
+        { characteristic: 'CHAR_A', nodes: ['NODE_1', 'NODE_2'] },
+        { characteristic: 'CHAR_A', nodes: ['A7'], nodeType: 'CHAR_A' },
+      ],
+    }],
+  }, { output });
+  assert.deepEqual(readWorkbook(output).dataProviders[0].state.filters, [
+    { characteristic: 'CHAR_A', selections: ['node NODE_1', 'node NODE_2', 'node A7'] },
+  ]);
+  const state = storedState(output);
+  assert.match(state, /<SELECTION type="SINGLE_MEMBER"><MEMBER name="NODE_1" type="HIERARCHY_NODE"><NODE_TYPE>0HIER_NODE<\/NODE_TYPE><\/MEMBER><\/SELECTION>/);
+  assert.match(state, /<MEMBER name="A7" type="HIERARCHY_NODE"><NODE_TYPE>CHAR_A<\/NODE_TYPE>/);
+
+  const errors = validateSpec({ ...MINIMAL_SPEC, dataProviders: [{ key: 'DS_1', query: 'Q', filters: [
+    { characteristic: 'C', nodes: ['N'] },
+    { characteristic: 'D', nodes: [], exclude: true },
+    { characteristic: 'E', members: ['X'], nodeType: '0HIER_NODE' },
+  ] }] });
+  assert.ok(errors.some((e) => /nodes need a hierarchy on C in hierarchies/.test(e)), errors.join(' / '));
+  assert.ok(errors.some((e) => /nodes must be a non-empty list/.test(e)));
+  assert.ok(errors.some((e) => /can only be included/.test(e)));
+  assert.ok(errors.some((e) => /nodeType goes with nodes/.test(e)));
+}));
+
+test('quickReportSheets puts query first, then reports, and requires a query', () => {
+  assert.deepEqual(quickReportSheets({ query: 'Q1', prompts: [{ name: 'V', member: 'X' }], reports: [{ query: 'Q2', sheet: 'S2' }] }).map((r) => [r.query, r.sheet, r.prompts?.length]),
+    [['Q1', undefined, 1], ['Q2', 'S2', undefined]]);
+  assert.deepEqual(quickReportSheets({ reports: [{ query: 'Q2' }, { query: 'Q3' }] }).map((r) => r.query), ['Q2', 'Q3']);
+  assert.throws(() => quickReportSheets({}), /give query or reports/);
+  assert.throws(() => quickReportSheets({ query: 'Q1', reports: [{ sheet: 'X' }] }), /reports\[0\]: query is required/);
+});
+
 function validateSpecOrThrow(spec) {
   const errors = validateSpec(spec);
   if (errors.length) throw new Error(errors.join('\n'));
@@ -790,3 +863,5 @@ test('updateWorkbook sets hierarchies and the compact display of rows in an exis
   assert.deepEqual(readWorkbook(output).dataProviders[0].state.hierarchies, [{ characteristic: 'CHAR_A', hierarchy: 'HIER_A' }]);
   assert.throws(() => updateWorkbook({ hierarchies: { DS_9: [{ characteristic: 'C', hierarchy: 'H' }] } }, { input, output: join(dir, 'bad.xlsx') }), /DS_9 is not in the workbook/);
 }));
+
+import { quickReportSheets } from '../dist/operate/quick.js';

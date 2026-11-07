@@ -38,7 +38,8 @@ Three parts, each usable on its own:
 **🖥️ Open workbooks and ad-hoc reports logged on**
 
 - `afo_open_workbook` — open a workbook in Excel, logged on, variables set, data refreshed
-- `afo_quick_report` — an ad-hoc report for any query, connected the way SAP Logon connects
+- `afo_quick_report` — an ad-hoc report for one or more queries, on a layout template if
+  wanted, connected the way SAP Logon connects
 - Logon per system from the server's environment or a secret runner; passwords never pass
   through tool arguments
 
@@ -58,7 +59,7 @@ Every tool in detail — parameters, behaviour, and how the tools combine — is
 | **Build** | `afo_build_workbook` — a new workbook, or a new layout for an existing one | no |
 | | `afo_update_workbook` — change an existing workbook in place of rebuilding it | no |
 | **Operate** | `afo_open_workbook` — open a workbook logged on, with variables and fresh data | yes (Windows) |
-| | `afo_quick_report` — ad-hoc report for one query, opened logged on | yes (Windows) |
+| | `afo_quick_report` — ad-hoc report for one or more queries, opened logged on | yes (Windows) |
 
 ### Agentic planning with Claude in Excel
 
@@ -67,9 +68,12 @@ Claude in Excel writes cells through Office.js, and Analysis for Office does not
 | Command | What it does |
 |---|---|
 | `SET Sheet!A1=value` | Write a value as user input |
+| `SETDATA DS Key figure\|DIM=key;…\|value` | Write a plan value by member combination, wherever the crosstab shows it |
+| `NEWLINES Crosstab n` · `CHANGEMODE DS` | New lines for new member combinations / switch to change mode |
 | `TRANSFER` | Send changed values to the server and check them |
 | `PLAN key` / `PVAR key NAME=value` | Run a planning function or sequence / set its variables |
-| `VAR DS NAME=value` / `FILTER DS DIM=value` | Set a query variable / filter a characteristic |
+| `VAR DS NAME=value` / `FILTER DS DIM=value` | Set a query variable / filter a characteristic (also on a planning function) |
+| `MOVE DS DIM=ROWS` · `EXPAND DS node` · `DRILLLEVEL DS DIM=n` | Navigate: move characteristics, open hierarchy nodes and levels |
 | `REFRESH` · `SAVE` · `RESET` | Refresh, save plan data, discard unsaved plan data |
 | `API SAPFunction a\|b` | Any AfO API function (except the logon) |
 | your own words | Workbook commands that run the macro behind a button |

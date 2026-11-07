@@ -123,7 +123,13 @@ export function validateSpec(spec: BuildSpec, layout?: MinimalLayout): string[] 
     (dp?.prompts ?? []).forEach((p, j) => errors.push(...promptProblems(p, `${what}.prompts[${j}]`)));
     if (dp?.filters !== undefined && !Array.isArray(dp.filters)) errors.push(`${what}.filters must be a list.`);
     else if (dp?.filters?.length && dp.from) errors.push(`${what}: filters and from do not combine; the data source taken over keeps its own filters.`);
-    else (dp?.filters ?? []).forEach((f, j) => errors.push(...filterProblems(f, `${what}.filters[${j}]`)));
+    else (dp?.filters ?? []).forEach((f, j) => {
+      errors.push(...filterProblems(f, `${what}.filters[${j}]`));
+      // A node name means something only within a hierarchy; AfO needs it active on the characteristic.
+      if (f?.nodes !== undefined && !(dp?.hierarchies ?? []).some((h) => h?.characteristic === f.characteristic && h.hierarchy)) {
+        errors.push(`${what}.filters[${j}] (${f.characteristic}): nodes need a hierarchy on ${f.characteristic} in hierarchies.`);
+      }
+    });
     for (const axis of ['rows', 'columns', 'free'] as const) {
       const v = dp?.axes?.[axis];
       if (v !== undefined && !Array.isArray(v)) errors.push(`${what}.axes.${axis} must be a list of names.`);

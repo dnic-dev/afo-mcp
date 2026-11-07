@@ -13,6 +13,7 @@ import {
   type AfoWorkbookSpec, CT_CP, CT_MACRO_MAIN, CT_VBA, CT_WS, type PlanningFunctionSpec, type PromptValue, REL_CP, REL_VBA, REL_WS,
   addRels, addVisibility, esc, guid, planningFunction, promptProblems, promptsVisibility, quoteSheet, relXml, stateXml, unstoredPrompts, utf16,
   systemInfo, withStoredPrompts,
+  normalizeWorkbookXml, relTargets,
 } from './afo.js';
 import { type CompactRowsSpec, type HierarchySpec, hierarchyProblems, withStoredHierarchies } from './hierarchy.js';
 import { firstElement, keyedElement, keyedElements, readSourceDefinition, sourceSystemInfo } from './source.js';
@@ -81,10 +82,6 @@ export interface UpdateResult {
 
 const HIDDEN_SHEET = '_com.sap.ip.bi.xl.hiddensheet';
 const VBA_NAME = /^[A-Za-z][A-Za-z0-9_]{0,30}$/;
-
-function relTargets(relsXml: string): Map<string, string> {
-  return new Map([...relsXml.matchAll(/<Relationship [^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map((m) => [m[1], m[2]]));
-}
 
 /** `xl/worksheets/sheet1.xml` + `../customProperty3.bin` → `xl/customProperty3.bin`. */
 function resolvePart(owner: string, target: string): string {
@@ -233,7 +230,7 @@ export function updateWorkbook(ops: UpdateOperations, options: UpdateOptions): U
   }
   if (errors.length) throw new Error(`The workbook was not changed:\n- ${errors.join('\n- ')}`);
 
-  let wb = text('xl/workbook.xml');
+  let wb = normalizeWorkbookXml(text('xl/workbook.xml'));
   let wbRels = text('xl/_rels/workbook.xml.rels');
   let ct = text('[Content_Types].xml');
   const targets = relTargets(wbRels);

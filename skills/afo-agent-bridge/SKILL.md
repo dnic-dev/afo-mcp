@@ -1,6 +1,6 @@
 ---
 name: afo-agent-bridge
-description: Operate SAP Analysis for Office (AfO) workbooks agentically from inside Excel through their agent bridge - read and analyse data, change variables and selections, filter (by member, interval, list or key figure value), navigate (move dimensions, swap axes, expand and collapse hierarchy nodes, set a drill level), enter plan data, run planning functions and sequences, save or discard plan data, trigger workbook buttons and call any other AfO API function. Use in every Excel workbook that has a sheet "AgentLog" or the defined name AfoAgentCommand, or that shows AfO crosstabs (SAP* cell styles, data sources DS_1, DS_2 ...), for any request that touches its data or its SAP connection. Prefer the bridge over Excel features (AutoFilter, sorting, hiding, formulas) on everything Analysis for Office owns.
+description: Operate SAP Analysis for Office (AfO) workbooks agentically from inside Excel through their agent bridge - read and analyse data, change variables and selections, filter (by member, interval, list or key figure value), navigate (move dimensions, swap axes, expand and collapse hierarchy nodes, set a drill level), enter plan data (by cell, by member combination or in new lines), run planning functions and sequences, save or discard plan data, trigger workbook buttons and call any other AfO API function. Use in every Excel workbook that has a sheet "AgentLog" or the defined name AfoAgentCommand, or that shows AfO crosstabs (SAP* cell styles, data sources DS_1, DS_2 ...), for any request that touches its data or its SAP connection. Prefer the bridge over Excel features (AutoFilter, sorting, hiding, formulas) on everything Analysis for Office owns.
 ---
 
 # Operating Analysis for Office workbooks through the agent bridge
@@ -50,10 +50,14 @@ JavaScript API (Claude in Excel or others) and for any AfO workbook that carries
 | `REFRESH` · `REFRESH DS` | Refresh all data sources or one. Mandatory variables must have values, or AfO opens the prompt dialog. |
 | `FILTER DS DIM=value` | Navigation filter on a characteristic: one key, an interval `a - b`, several keys `a;b;c` (own line), or `@Sheet!A1:A99` for the keys in a range. Empty value removes it. |
 | `FILTERWHERE DS DIM "Column header" op number` | Filter a characteristic to the members whose value in the crosstab column meets the condition (`=` `<>` `<` `<=` `>` `>=`, decimal point, no thousands separator). Becomes a real AfO filter on the member keys and survives refresh. The crosstab must show the characteristic's keys in its rows. |
-| `UNFILTER DS DIM` | Remove the navigation filter of a characteristic. Variables are not touched. |
+| `UNFILTER DS DIM` | Remove the navigation filter of a characteristic. Variables are not touched. `FILTER` and `UNFILTER` also take a planning function or sequence (`PF_1`, `PS_1`) in place of `DS`: that restricts the data it works on. |
+| `MOVE DS DIM=ROWS` | Move a characteristic: `ROWS` or `COLUMNS` (at the end), `FREE` (out of the crosstab), `AFTER OTHER`, `BEFORE OTHER` (next to another dimension), `SWAP OTHER` (exchange places). |
 | `EXPAND DS node` · `COLLAPSE DS node` | Expand or collapse a hierarchy node in the crosstab, as a click on its `[+]`/`[-]` does. The node by key or by text as shown, or by its cell (`Sheet!B9`) when the name appears more than once. Works for BW hierarchies and for the compact display of rows (several characteristics in the rows shown as one tree). |
 | `DRILLLEVEL DS DIM=n` | Show the hierarchy of a characteristic in the rows down to level n (1 = top nodes only); nodes are expanded and collapsed one by one. |
-| `SET Sheet!A1=value` | Enter a value as user input, e.g. plan data in an input-ready cell. Numbers with decimal point. A range sets the same value in every cell. Empty value clears. |
+| `SET Sheet!A1=value` | Enter a value as user input, e.g. plan data in an input-ready cell. Numbers with decimal point. A range sets the same value in every cell. Empty value clears. A value in double quotes is written as text (`"01.2026"`), as are values with a leading zero. |
+| `SETDATA DS Key figure\|DIM=key;DIM=key\|value` | Enter a plan value by member combination, wherever the crosstab shows it: the key figure as its header text, every characteristic in the rows and columns with its key (as `SAPGetData` takes it), the value. The combination must be an input-ready cell of the current result at the lowest level, not a total. Follow with `TRANSFER`. |
+| `NEWLINES Crosstab1 n` | Show n empty lines below an input-ready crosstab for member combinations it does not show yet. Fill a line with `SET`: the key of every characteristic in the rows as text (`"01.2026"`), then the values; `TRANSFER` turns it into a regular row. |
+| `CHANGEMODE DS` · `DISPLAYMODE DS` | Switch an input-ready data source to change mode (its cells take input) or back. `DISPLAYMODE` with unsaved plan data makes AfO ask in a dialog: `SAVE` (after asking) or `RESET` first. |
 | `TRANSFER` | Send entered values to the server and check them (disaggregation, characteristic relationships, data slices, locks). |
 | `PLAN key` | Run a planning function or sequence (keys as listed on the bridge sheet, e.g. `PF_1`, `PS_1`). |
 | `PVAR key NAME=value` | Set a variable of a planning function or sequence. Variables the workbook reads from a cell: change the cell with `SET` instead. |
@@ -65,8 +69,7 @@ JavaScript API (Claude in Excel or others) and for any AfO workbook that carries
 
 Use the AfO API by name. Commonly needed:
 
-- `SAPMoveDimension` – move a characteristic to rows, columns or the background (free), or change
-  its position; this is how drill-down and "remove from crosstab" work.
+- `SAPMoveDimension` – what `MOVE` calls; use `API` only for forms `MOVE` does not cover.
 - `SAPSetFilter` – the full filter function (FILTER is the short form).
 - `SAPExecuteCommand` – AfO commands such as `Refresh`, `PlanDataTransfer`, `PlanDataSave`,
   `PlanDataReset`, `ShowPrompts`, and others AfO offers in its API.
@@ -124,14 +127,25 @@ are recognisable by their cell style (input-ready styles, typically highlighted)
   behind another window, the pointer visibly jumps across it. The Excel window must not be
   minimized. Tell the user before a longer `DRILLLEVEL` run, and ask them not to use the mouse
   meanwhile.
-- **Plan:** confirm the target cells are input-ready and unambiguous; `SET` the values;
+- **Plan:** cells take input only in change mode: data cells with an editable cell style
+  (`SAPEditableDataCell`); read-only styles mean display mode (`CHANGEMODE DS`) or a cell that is
+  not input-ready (a total, a characteristic aggregated away). Confirm the target cells are input-ready and unambiguous; `SET` the values;
   `TRANSFER`; check `AfoAgentResult` and that the values are still in the cells (AfO drops text in
   data cells silently and may disaggregate totals to the members below). Use a planning function
   (`PLAN`) for changes to many cells or for derived values. Then ask before `SAVE`.
+- **Plan by member combination:** when the cell is hard to find or not on screen, `SETDATA` with
+  the key figure and all characteristics of the rows and columns; check the result as with `SET`.
+  An `ERROR` means the combination is not an input-ready cell of the current result.
+- **Plan something new** (a product, a location the crosstab does not show): `NEWLINES`, then
+  `SET` the keys as text and the values in a new line, `TRANSFER`, and check the new row.
 - **Several changes at once:** put them on separate lines of one command; consider
   `API SAPSetRefreshBehaviour` to pause refreshing for larger sequences.
 - **Something fails:** report the step and AfO's message in plain words, propose the next step,
   do not retry blindly.
+- **Message windows:** while commands run, AfO's message window is off and its messages go to the
+  log. A fatal AfO error ("an exception occurred in one of the data sources … restart") still
+  opens a window and disconnects the data sources: tell the user, who confirms it and restarts in
+  Analysis for Office.
 
 ## 5. Rules
 

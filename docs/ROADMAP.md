@@ -84,7 +84,10 @@ to cover what a planner can do in AfO with keyboard and mouse.
 - [x] **`PVAR key NAME=value`:** *(implemented; variables read from cells are rejected by AfO and
       set through their cell instead; test with free variables in the parcours)* variables of planning functions and sequences
       (`SAPSetPlanParameter`).
-- [ ] **Dialog guard in the bridge (VBA):** no command may hang on a dialog (prompt dialog on refresh, message
+- [x] **Dialog guard in the bridge (VBA):** *(#8: AfO's message window is off while commands run,
+      `SAPSetRefreshBehaviour` with message display off; messages go to the log. Still shown: the
+      restart dialog after a fatal AfO exception, the save question of `DISPLAYMODE` with unsaved
+      data, the prompt dialog; the help tells the agent to ask the user after 30 s.)* No command may hang on a dialog (prompt dialog on refresh, message
       dialog, confirmations). Prompts: require `VAR` first or detect and report. Messages: through
       `SAPListOfMessages`; check whether the `BeforeMessageDisplay` callback with
       `SAPSuppressMessage` is needed.
@@ -107,16 +110,18 @@ to cover what a planner can do in AfO with keyboard and mouse.
       excluded). Covers navigation, design rules and `SAPExecuteCommand` until convenience commands
       exist. *(Parameters of SAPMoveDimension and the design rule functions to be confirmed live.)*
 
-- [ ] **`MOVE`:** move a dimension to rows, columns or free characteristics (`SAPMoveDimension`).
+- [x] **`MOVE`:** move a dimension to rows, columns or free characteristics (`SAPMoveDimension`) (#8).
 - [x] **Hierarchies:** `EXPAND`, `COLLAPSE`, `DRILLLEVEL` (#14). The AfO API has no function for
       hierarchies; the bridge clicks the node symbol like a user (AfO reads the position from the
       mouse pointer). Tested live on a BW hierarchy and on the compact display of rows. Switching a
       hierarchy on or off has no API: it comes from the query or the saved state.
-- [ ] **Filter on planning objects** (`SAPSetFilter` with a planning object alias); test.
-- [ ] **Write by members:** `SAPSetData` (value for a member combination), independent of the
-      crosstab layout; needed for formula-based planning and for cells not on screen.
-- [ ] **New lines:** input into a crosstab's new-line area through `SET`; test.
-- [ ] **Design rules:** `SAPSetFormat`, `SAPSetText`, `SAPInsertLine`, `SAPFixLineSize`,
+- [x] **Filter on planning objects** (`SAPSetFilter` with a planning object alias): `FILTER PF_1 …` (#8).
+- [x] **Write by members:** `SETDATA` through the formula `SAPSetData` (#8). *(Live: the
+      combination must be an input-ready cell of the current result at the lowest level; the
+      data source must be in change mode, `CHANGEMODE`.)*
+- [x] **New lines:** `NEWLINES Crosstab1 n` and `SET` with keys as text (#8). *(Live: a new line
+      becomes a regular row after `TRANSFER`.)*
+- [ ] **Design rules** (no own command; through `API`, signatures to be confirmed live): `SAPSetFormat`, `SAPSetText`, `SAPInsertLine`, `SAPFixLineSize`,
       `SAPDeleteDesignRule`, `SAPListOfDesignRules`.
 - [ ] Undo/redo where AfO offers it.
 
@@ -174,7 +179,8 @@ first.)*
       the compact display of rows) in `afo_build_workbook`, `afo_update_workbook` and
       `afo_quick_report` (#15). *(Live on our BW test system: built and retrofitted workbooks open with the
       hierarchy on the given level; the bridge navigates in them.)*
-- [ ] Describe in the spec (for workbooks designed from scratch): filters on hierarchy nodes;
+- [x] Filters on hierarchy nodes in the spec (`nodes`, with the hierarchy in `hierarchies`) (#4).
+- [ ] Describe in the spec (for workbooks designed from scratch):
       display per characteristic (key/text, totals); planning function filter references.
 
 ### D2. Workbooks stored in BW (in bw-modeling-mcp, using the afo-mcp parser as a library)
@@ -215,7 +221,8 @@ the afo-mcp parser. Tracked as issues in the bw-modelling-skills repository.
 - [x] `afo_open_workbook`: open a workbook logged on (credentials per system from the environment,
       through a vault starter), prompt values, refresh, save. Excel runs outside the server.
 - [x] `afo_quick_report`: ad-hoc .xlsx for one query, connection from the SAP Logon landscape,
-      opened logged on with the data.
+      opened logged on with the data. Several queries on several sheets (`reports`) and a layout
+      workbook (`template`) (#4).
 - [x] Dialog check for the open tools: when Excel waits on a dialog, the call stops and reports
       it; the dialog stays open for the user. *(Live: message dialog reported after the stall
       time, left open in Excel.)*

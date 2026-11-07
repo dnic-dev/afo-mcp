@@ -39,14 +39,18 @@ const LOG_KEEP = 500;
 
 /** Generic commands; workbook commands must not reuse these words. */
 export const BUILTIN_COMMANDS: Array<[string, string]> = [
-  ['SET Sheet!A1=value', 'Write a value as user input (Analysis for Office registers it). Decimal point, no thousands separator. Empty value clears the cell. A range writes the same value into every cell. Values are checked when they are transferred: follow with TRANSFER or a planning function.'],
+  ['SET Sheet!A1=value', 'Write a value as user input (Analysis for Office registers it). Decimal point, no thousands separator. Empty value clears the cell. A range writes the same value into every cell. Values are checked when they are transferred: follow with TRANSFER or a planning function. A value in double quotes is written as text ("01.2026"), as are values with a leading zero. Also for the new lines below an input-ready crosstab (see NEWLINES).'],
+  ['SETDATA DS_1 Key figure|DIM=key;DIM=key|value', 'Write a plan value by member combination instead of by cell, independent of where the crosstab shows it: the key figure as its header text, then every characteristic in the rows (and columns) of DS_1 with its key, then the value (decimal point). The combination must be an input-ready cell of the current result at the lowest level, not a total. Follow with TRANSFER.'],
+  ['NEWLINES Crosstab1 5', 'Show n empty lines below an input-ready crosstab (data source in change mode) for member combinations it does not show yet. Write the keys of all characteristics in the rows of a new line with SET as text ("01.2026") and the values, then TRANSFER: the line becomes a regular row. Keys in the format the crosstab shows them.'],
+  ['CHANGEMODE DS_1', 'Switch an input-ready data source to change mode, so its cells take input (DISPLAYMODE DS_1: back to display mode; SAVE or RESET first, or Analysis for Office asks in a dialog whether to save). Input-ready cells have an editable cell style; read-only data cells do not.'],
   ['TRANSFER', 'Send changed input values to the server and check them, without running a planning function. "nothing pending" when there is nothing to send.'],
   ['PLAN key', 'Run a planning function or sequence by its key (PF_1, PS_1, ...).'],
   ['PVAR key NAME=value', 'Set a variable of a planning function or sequence, value as typed in the prompt. Variables the workbook reads from a cell are better set by SET on that cell: the next run reads the cell again.'],
   ['VAR DS_1 NAME=value', 'Set a variable of a data source, value in external format as typed in the prompt (01.2025, 01.2025 - 12.2025). Consecutive VAR steps are submitted together.'],
   ['FILTER DS_1 DIMENSION=value', 'Filter a characteristic, value as typed in the filter dialog: a key, an interval (a - b), several keys separated by ";" (write the command on its own line then), or @Sheet!A1:A50 for the keys in a range. An empty value removes the filter.'],
   ['FILTERWHERE DS_1 DIMENSION "Key figure" >= 100000', 'Filter a characteristic to the members whose value in the crosstab of DS_1 meets the condition (=, <>, <, <=, >, >=). The key figure is the column header text as shown. The result is a real Analysis for Office filter on the member keys; it stays when the data source is refreshed. Lift it with UNFILTER.'],
-  ['UNFILTER DS_1 DIMENSION', 'Remove the navigation filter of a characteristic (variables stay as they are).'],
+  ['UNFILTER DS_1 DIMENSION', 'Remove the navigation filter of a characteristic (variables stay as they are). FILTER and UNFILTER also take a planning function or sequence (PF_1, PS_1) in place of DS_1: that restricts the data it works on.'],
+  ['MOVE DS_1 DIMENSION=ROWS', 'Move a characteristic: ROWS or COLUMNS (added at the end), FREE (out of the crosstab), AFTER OTHER or BEFORE OTHER (next to another dimension), SWAP OTHER (exchange places).'],
   ['REFRESH', 'Refresh all data sources (REFRESH DS_1: one data source). Set mandatory variables with VAR first, or the prompt dialog opens.'],
   ['EXPAND DS_1 node', 'Expand a hierarchy node in the crosstab of DS_1, as a click on its [+] does: the node by key or text as shown, or its cell (Sheet!B9) when the name appears more than once. Works for BW hierarchies and for the compact display of rows. Nodes show [+] (collapsed) or [-] (expanded) before their name.'],
   ['COLLAPSE DS_1 node', 'Collapse a hierarchy node, as a click on its [-] does; same forms as EXPAND.'],
@@ -58,7 +62,7 @@ export const BUILTIN_COMMANDS: Array<[string, string]> = [
 const BUILTIN_WORDS = new Set(BUILTIN_COMMANDS.map(([c]) => c.split(' ')[0]));
 
 const RULES = [
-  'This is an Analysis for Office workbook: work through these commands. Never use Excel means on a crosstab: no AutoFilter, no sorting, no hiding rows or columns, no formulas or values written into it. They are lost on the next refresh and Analysis for Office does not see them. A filter, also one on key figure values, is FILTER or FILTERWHERE; other navigation is API (SAPMoveDimension, SAPSetFilter, SAPExecuteCommand). Only when no command covers a request, say so and ask before using Excel.',
+  'This is an Analysis for Office workbook: work through these commands. Never use Excel means on a crosstab: no AutoFilter, no sorting, no hiding rows or columns, no formulas or values written into it. They are lost on the next refresh and Analysis for Office does not see them. A filter, also one on key figure values, is FILTER or FILTERWHERE; moving characteristics is MOVE; other navigation is API (SAPSetFilter, SAPExecuteCommand). Only when no command covers a request, say so and ask before using Excel.',
   'Several commands: one per line in B1 (line breaks). A single line may also separate commands with ";" as long as no value contains ";".',
   'Ask the user before SAVE and before RESET.',
   'Selection ambiguous (a member under several parents, several matching rows)? Ask before writing.',
@@ -67,7 +71,7 @@ const RULES = [
   'Data cells take numbers only. Text in a data cell is ignored by Analysis for Office without a message: after recalculating, check that the values you wrote are still there.',
   'Hierarchies: EXPAND, COLLAPSE and DRILLLEVEL work on a hierarchy that is shown. Switching a hierarchy on or off, or the compact display of rows, has no API function: it comes from the query or from the state saved with the workbook (afo-mcp can prepare that); ask the user to switch it in Analysis for Office if needed. These commands click the [+]/[-] symbol as a user does: the crosstab sheet is shown, the mouse pointer jumps there for a moment, and the Excel window must not be minimized.',
   'Navigation (moving dimensions, drilling down) makes crosstabs grow; one growing into another is cut off (a WARNING in the log). Check the layout before navigating a crosstab placed above another.',
-  'B3 still says "running" after 30 seconds: a dialog is probably open in Excel; ask the user to look.',
+  'While a command runs, Analysis for Office shows no message windows: its messages go to the log, and an error fails the step. B3 still says "running" after 30 seconds: another dialog is probably open in Excel; ask the user to look.',
   'B4 is not "active": macros are disabled; ask the user to enable content and reopen.',
 ];
 
@@ -151,6 +155,8 @@ Private variablesPaused As Boolean
 Private lastMessage As String
 Private initTries As Long
 Private stage As String
+Private refreshMode As String
+Private Const SETDATA_CELL As String = "AC1"
 
 ' Hierarchy nodes are expanded and collapsed by a click on their symbol: the AfO API has no
 ' function for it, and Analysis for Office reads the click position from the mouse pointer.
@@ -224,11 +230,15 @@ Public Sub RunPending()
     Dim cmd As String: cmd = pending: pending = ""
     If cmd = "" Then Exit Sub
     EnsureFormulas
+    ' Dialog guard: AfO message windows would stop the command until someone closes them. While
+    ' commands run, messages only go to the message list, which the log reads after every step.
+    Quiet True
     ' Commands one per line; a single line may separate them by ";" (then no value may contain ";",
     ' which Analysis for Office uses between several filter values).
     cmd = Replace(Replace(cmd, vbCrLf, vbLf), vbCr, vbLf)
     Dim steps() As String
-    If InStr(cmd, vbLf) > 0 Then steps = Split(cmd, vbLf) Else steps = Split(cmd, ";")
+    ' SETDATA carries ";" in its member combination: a single SETDATA line is never split.
+    If InStr(cmd, vbLf) > 0 Or UCase$(Left$(LTrim$(cmd), 8)) = "SETDATA " Then steps = Split(cmd, vbLf) Else steps = Split(cmd, ";")
     Dim i As Long, n As Long, stepText As String
     For i = 0 To UBound(steps)
         stepText = Trim$(steps(i))
@@ -237,13 +247,22 @@ Public Sub RunPending()
             If variablesPaused And UCase$(Left$(stepText, 4)) <> "VAR " Then ResumeVariables
             If Not RunOne(stepText) Then
                 ResumeVariables
+                Quiet False
                 SetCell "B3", "ERROR " & Format$(Now, "hh:nn:ss") & " in step " & n & " (" & stepText & "): " & lastMessage
                 Exit Sub
             End If
         End If
     Next i
     ResumeVariables
+    Quiet False
     SetCell "B3", "OK " & Format$(Now, "hh:nn:ss") & ", " & n & " step(s): " & Replace(cmd, vbLf, " / ")
+End Sub
+
+' Message windows of AfO off (quiet) or on again; the refresh mode stays as the agent set it.
+Private Sub Quiet(ByVal quietOn As Boolean)
+    If refreshMode = "" Then refreshMode = "On"
+    On Error Resume Next
+    Application.Run "SAPSetRefreshBehaviour", refreshMode, IIf(quietOn, "Off", "On")
 End Sub
 
 Private Function RunOne(ByVal stepText As String) As Boolean
@@ -275,6 +294,11 @@ Private Function RunOne(ByVal stepText As String) As Boolean
     Case "EXPAND": RunOne = DoNode(rest, True)
     Case "COLLAPSE": RunOne = DoNode(rest, False)
     Case "DRILLLEVEL": RunOne = DoDrillLevel(rest)
+    Case "MOVE": RunOne = DoMove(rest)
+    Case "SETDATA": RunOne = DoSetData(rest)
+    Case "CHANGEMODE": RunOne = DoMode(rest, "PlanDataToChangeMode")
+    Case "DISPLAYMODE": RunOne = DoMode(rest, "PlanDataToDisplayMode")
+    Case "NEWLINES": RunOne = DoNewLines(rest)
 ${custom}
     Case Else
         lastMessage = "unknown command " & verb
@@ -291,10 +315,102 @@ ${custom}
     LogLine IIf(RunOne, "OK", "ERROR"), stepText, lastMessage
     Exit Function
 failed:
+    Busy = False
     lastMessage = Err.Description
     If stage <> "" Then lastMessage = lastMessage & " (at " & stage & ")"
     LogLine "ERROR", stepText, lastMessage
     RunOne = False
+End Function
+
+' MOVE DS_1 DIM=ROWS|COLUMNS|FREE, or AFTER|BEFORE|SWAP OTHER: SAPMoveDimension.
+Private Function DoMove(ByVal rest As String) As Boolean
+    Dim sp As Long: sp = InStr(rest, " ")
+    Dim eq As Long: eq = InStr(rest, "=")
+    If sp = 0 Or eq < sp Then GoTo badForm
+    Dim ds As String: ds = Trim$(Left$(rest, sp - 1))
+    Dim dimension As String: dimension = Trim$(Mid$(rest, sp + 1, eq - sp - 1))
+    Dim target As String: target = Trim$(Mid$(rest, eq + 1))
+    Dim action As String, other As String, p As Long
+    p = InStr(target, " ")
+    If p > 0 Then
+        action = UCase$(Left$(target, p - 1)): other = Trim$(Mid$(target, p + 1))
+    Else
+        action = UCase$(target)
+    End If
+    Select Case action
+    Case "ROWS", "COLUMNS"
+        If other <> "" Then GoTo badForm
+    Case "FREE", "FILTER"
+        action = "FILTER"
+        If other <> "" Then GoTo badForm
+    Case "AFTER", "BEFORE", "SWAP"
+        If other = "" Then GoTo badForm
+    Case Else
+        GoTo badForm
+    End Select
+    If other = "" Then
+        DoMove = Check(Application.Run("SAPMoveDimension", ds, dimension, action))
+    Else
+        DoMove = Check(Application.Run("SAPMoveDimension", ds, dimension, action, other))
+    End If
+    If DoMove Then lastMessage = dimension & " moved: " & target
+    Exit Function
+badForm:
+    lastMessage = "form: MOVE DS_1 DIMENSION=ROWS, COLUMNS, FREE, AFTER OTHER, BEFORE OTHER or SWAP OTHER"
+End Function
+
+' SETDATA DS_1 Key figure|DIM=key;DIM=key|value: the AfO formula SAPSetData, entered and
+' calculated once in a free cell of the bridge sheet. The value stays as user input after the
+' formula is removed; TRANSFER sends it.
+Private Function DoSetData(ByVal rest As String) As Boolean
+    Dim sp As Long: sp = InStr(rest, " ")
+    If sp = 0 Then GoTo badForm
+    Dim parts() As String: parts = Split(Mid$(rest, sp + 1), "|")
+    If UBound(parts) <> 2 Then GoTo badForm
+    Dim ds As String: ds = Trim$(Left$(rest, sp - 1))
+    Dim measure As String: measure = Trim$(parts(0))
+    Dim combo As String: combo = Trim$(parts(1))
+    Dim v As String: v = Trim$(parts(2))
+    If measure = "" Or combo = "" Or v = "" Or v = "-" Or v = "." Or v Like "*[!0-9.-]*" Then GoTo badForm
+    Dim cell As Range: Set cell = ThisWorkbook.Worksheets(BRIDGE_SHEET).Range(SETDATA_CELL)
+    Dim result As Variant
+    stage = "SAPSetData"
+    Busy = True
+    cell.Formula = "=SAPSetData(" & Quoted(ds) & "," & v & ",,"  & Quoted(measure) & "," & Quoted(combo) & ")"
+    cell.Calculate
+    result = cell.Value
+    cell.ClearContents
+    Busy = False
+    If IsError(result) Then
+        lastMessage = "SAPSetData rejected " & measure & " (" & combo & "): the combination must be an input-ready cell of the current result of " & ds & " at the lowest level, all characteristics in the rows and columns given with their keys, and the data source in change mode"
+        Exit Function
+    End If
+    lastMessage = measure & " (" & combo & ") = " & Txt(result)
+    DoSetData = True
+    Exit Function
+badForm:
+    lastMessage = "form: SETDATA DS_1 Key figure|DIM=key;DIM=key|value (number with decimal point)"
+End Function
+
+Private Function Quoted(ByVal s As String) As String
+    Quoted = """" & Replace(s, """", """""") & """"
+End Function
+
+' CHANGEMODE / DISPLAYMODE DS_1: PlanDataToChangeMode / PlanDataToDisplayMode.
+Private Function DoMode(ByVal ds As String, ByVal cmd As String) As Boolean
+    If ds = "" Or InStr(ds, " ") > 0 Then lastMessage = "form: " & IIf(cmd = "PlanDataToChangeMode", "CHANGEMODE", "DISPLAYMODE") & " DS_1": Exit Function
+    DoMode = Check(Application.Run("SAPExecuteCommand", cmd, ds))
+    If DoMode Then lastMessage = ds & IIf(cmd = "PlanDataToChangeMode", ": change mode", ": display mode")
+End Function
+
+' NEWLINES Crosstab1 n: the number of empty lines for new member combinations below the crosstab.
+Private Function DoNewLines(ByVal rest As String) As Boolean
+    Dim sp As Long: sp = InStr(rest, " ")
+    If sp = 0 Then lastMessage = "form: NEWLINES Crosstab1 5": Exit Function
+    Dim n As String: n = Trim$(Mid$(rest, sp + 1))
+    If n = "" Or n Like "*[!0-9]*" Then lastMessage = "form: NEWLINES Crosstab1 5": Exit Function
+    DoNewLines = Check(Application.Run("SAPExecuteCommand", "NumberOfNewLines", Trim$(Left$(rest, sp - 1)), n))
+    If DoNewLines Then lastMessage = Trim$(Left$(rest, sp - 1)) & ": " & n & " new line(s)"
 End Function
 
 Private Function DoSet(ByVal rest As String) As Boolean
@@ -307,8 +423,12 @@ Private Function DoSet(ByVal rest As String) As Boolean
     Dim v As String: v = Trim$(Mid$(rest, eq + 1))
     If v = "" Then
         target.ClearContents
-    ElseIf v Like "*[!0-9.-]*" Or v = "-" Or v = "." Then
-        target.Value = v
+    ElseIf Len(v) >= 2 And Left$(v, 1) = """" And Right$(v, 1) = """" Then
+        ' "01.2026": text as typed, e.g. a member key in a new line that looks like a number.
+        target.Value = "'" & Mid$(v, 2, Len(v) - 2)
+        v = Mid$(v, 2, Len(v) - 2)
+    ElseIf v Like "*[!0-9.-]*" Or v = "-" Or v = "." Or v Like "0[0-9]*" Then
+        target.Value = "'" & v
     Else
         target.Value = Val(v)
     End If
@@ -769,6 +889,10 @@ Private Function DoApi(ByVal rest As String) As Boolean
     Case 9: result = Application.Run(fn, a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9))
     Case Else: result = Application.Run(fn, a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9), a(10))
     End Select
+    If UCase$(fn) = "SAPSETREFRESHBEHAVIOUR" And n >= 1 Then
+        If UCase$(a(1)) = "ON" Or UCase$(a(1)) = "OFF" Then refreshMode = a(1)
+        Quiet True
+    End If
     Dim shown As String: shown = Flatten(result)
     If IsError(result) Or shown = "0" Then
         lastMessage = Txt(Application.Run("SAPGetProperty", "LastError", "Text"))
@@ -821,6 +945,7 @@ Private Function Check(ByVal result As Variant) As Boolean
     If Not Check Then
         On Error Resume Next
         lastMessage = Txt(Application.Run("SAPGetProperty", "LastError", "Text"))
+        If lastMessage = "" Then lastMessage = "Analysis for Office returned " & IIf(Txt(result) = "", "an error", Txt(result)) & " without a message"
     End If
 End Function
 

@@ -78,7 +78,7 @@ Write a new workbook from a spec — on a layout template, on an existing AfO wo
 
 | Spec field | |
 |---|---|
-| `dataProviders` | Alias, query, InfoProvider, input readiness, stored `prompts` (internal format; `member`, `literal` or `low`/`high`) `axes` (characteristics by name, a key figure structure by its runtime UID) and `filters` (per characteristic: `members`, `low`/`high` or `operator` + `value`, optionally `exclude`; internal keys) |
+| `dataProviders` | Alias, query, InfoProvider, input readiness, stored `prompts` (internal format; `member`, `literal` or `low`/`high`) `axes` (characteristics by name, a key figure structure by its runtime UID) and `filters` (per characteristic: `members`, `nodes` of a hierarchy, `low`/`high` or `operator` + `value`, optionally `exclude`; internal keys) |
 | `grids` | Crosstabs: data source, sheet, top-left cell. AfO does not move crosstabs apart — leave room for the rows each one grows to |
 | `planningFunctions` | Planning function or sequence: alias, data source, aggregation level, its characteristics, fixed filter values, stored variables, variables read from cells |
 | `formulaItems` | Filter components and other formula items; the formula is written into the cell as well |
@@ -142,16 +142,20 @@ Returns the Excel process id, the steps, the logon result, variable values after
 **Security bar.** For a macro workbook outside a trusted location, Excel disables the content until the user clicks *Enable Content*, and Analysis for Office refuses the logon until then. The tool keeps retrying for `logonWaitSeconds`; tell the user beforehand, or keep such workbooks in a trusted location.
 
 ### `afo_quick_report`
-An ad-hoc report for one query: a plain `.xlsx` with the query in a crosstab and the variable values stored, connected the way the SAP Logon landscape describes the system (server, system number, SAProuter, SNC name), opened logged on with the data. Without macros Excel shows no security bar, so the logon runs without the user.
+An ad-hoc report for one or more queries: a plain `.xlsx` with each query in a crosstab and the variable values stored, connected the way the SAP Logon landscape describes the system (server, system number, SAProuter, SNC name), opened logged on with the data. Without macros Excel shows no security bar, so the logon runs without the user.
 
 | Parameter | |
 |---|---|
-| `query` | Technical name of the query |
+| `query` | Technical name of the query (the first crosstab) |
+| `sheet`, `cell` | Where its crosstab goes (default sheet `Report`, or the query name when there are several; cell `B4`) |
 | `system`, `client`, `language` | Default: the configured logon (when exactly one system is configured) |
 | `prompts` | Variable values, internal format (`member`, `literal`, `low`/`high`) |
-| `axes` | Optional layout: rows, columns, free characteristics |
-| `filters` | Optional stored filters, as in `afo_build_workbook` |
-| `folder` | Where the file goes (default `Documents\AfO Reports`) |
+| `axes` | Optional layout: rows, columns, free characteristics; a key figure structure by its runtime UID |
+| `filters` | Optional stored filters, as in `afo_build_workbook`, hierarchy nodes included |
+| `hierarchies`, `compactRows` | BW hierarchies and the compact display of rows on open, as in `afo_build_workbook` |
+| `reports` | Further queries, each with its own `query`, `sheet`, `cell`, `prompts`, `axes`, `filters`, `hierarchies`, `compactRows`; one crosstab and data source each (`DS_1`, `DS_2`, … in order) |
+| `template` | A layout workbook (logo, titles, formats) the crosstabs are placed into; its visible sheets are used in order unless `sheet` names one. Company or customer design belongs here, not in the server |
+| `folder` | Where the file goes (default `Documents\AfO Reports`); a second report in the same minute gets a counter |
 | `open` | `false` writes the file only |
 
 Give every mandatory variable a value — `bw_get_query` lists the variables, `bw_get_filter_values` the valid keys — otherwise AfO shows the prompt dialog.
@@ -162,22 +166,26 @@ Give every mandatory variable a value — `bw_get_query` lists the variables, `b
 
 Not a tool of its own but a part of a workbook, added by `afo_build_workbook` or `afo_update_workbook` with `agentBridge`. It exists because Claude in Excel writes cells through Office.js, and Analysis for Office registers only user input: a plan value written by the agent is silently ignored.
 
-The bridge sheet (default `AgentLog`, hidden by default) has a command cell (`B1`, defined name `AfoAgentCommand`), a result cell (`B3`, `AfoAgentResult`) and a status cell (`B4`, `AfoAgentStatus`), a help text, the AfO messages and a step log. Several commands go into one cell, separated by `;`.
+The bridge sheet (default `AgentLog`, hidden by default) has a command cell (`B1`, defined name `AfoAgentCommand`), a result cell (`B3`, `AfoAgentResult`) and a status cell (`B4`, `AfoAgentStatus`), a help text, the AfO messages and a step log. Several commands go into one cell, one per line.
 
 | Command | |
 |---|---|
-| `SET Sheet!A1=value` | Write a value as user input; a range writes the same value into every cell. Follow with `TRANSFER` or a planning function |
+| `SET Sheet!A1=value` | Write a value as user input; a range writes the same value into every cell; `"01.2026"` in quotes is written as text. Follow with `TRANSFER` or a planning function |
+| `SETDATA DS_1 Key figure\|DIM=key;DIM=key\|value` | Write a plan value by member combination (`SAPSetData`), wherever the crosstab shows it; the combination must be an input-ready cell of the result at the lowest level |
+| `NEWLINES Crosstab1 n` | Show n new lines below an input-ready crosstab; fill them with `SET` (keys as text), then `TRANSFER` |
+| `CHANGEMODE DS_1` / `DISPLAYMODE DS_1` | Switch an input-ready data source to change mode / back (save or reset first) |
+| `MOVE DS_1 DIM=ROWS` | Move a characteristic: `ROWS`, `COLUMNS`, `FREE`, `AFTER OTHER`, `BEFORE OTHER`, `SWAP OTHER` |
 | `TRANSFER` | Send changed values to the server and check them |
 | `PLAN key` | Run a planning function or sequence by its alias |
 | `PVAR key NAME=value` | Set a variable of a planning function or sequence |
 | `VAR DS_1 NAME=value` | Set a query variable, external format as in the prompt |
-| `FILTER DS_1 DIM=value` | Filter a characteristic, as in the filter dialog |
+| `FILTER DS_1 DIM=value` | Filter a characteristic, as in the filter dialog; also on a planning function or sequence (`FILTER PF_1 …`) |
 | `REFRESH` | Refresh all data sources, or one |
 | `API SAPFunction a\|b` | Call any AfO API function; `SAPLogon` is excluded |
 | `SAVE` / `RESET` | Save plan data / discard unsaved plan data |
 | workbook commands | Own words that run a macro, e.g. the one behind a button |
 
-After every step the new AfO messages are logged; an error message or a rejected value (data slice, characteristic relationship, lock) fails the step. The help text carries the rules an agent should follow: ask before `SAVE` and `RESET`, ask when a selection is ambiguous, write only input-ready cells, prefer planning functions for mass changes.
+While commands run, AfO's message window is switched off (`SAPSetRefreshBehaviour`), so a message cannot stop a command; after every step the new AfO messages are logged; an error message or a rejected value (data slice, characteristic relationship, lock) fails the step. The help text carries the rules an agent should follow: ask before `SAVE` and `RESET`, ask when a selection is ambiguous, write only input-ready cells, prefer planning functions for mass changes.
 
 Reading needs no command. The bridge sheet explains the AfO read formulas (`SAPListOf`, `SAPGetCellInfo`, `SAPGetVariable`, …) and keeps live lists of data sources, planning objects and messages.
 

@@ -99,10 +99,23 @@ export interface DesignRulesSpec {
   area?: 'BOTH_AREAS' | 'LAST_AREA' | 'FIRST_AREA';
 }
 
-/** A filter on one characteristic: members, an interval, or a comparison, included or excluded. */
+/**
+ * A filter on one characteristic: members, hierarchy nodes, an interval, or a comparison,
+ * included or excluded.
+ */
 export interface FilterSpec {
   characteristic: string;
   members?: string[];
+  /**
+   * Hierarchy nodes by node name (as the hierarchy shows them). Needs a hierarchy on the
+   * characteristic in `hierarchies`; nodes can only be included.
+   */
+  nodes?: string[];
+  /**
+   * Node type of `nodes`: 0HIER_NODE for text nodes (default); for a node that is a value of
+   * another characteristic, that characteristic.
+   */
+  nodeType?: string;
   low?: string;
   high?: string;
   operator?: 'GREATER' | 'GREATER_EQUAL' | 'LESS' | 'LESS_EQUAL';
@@ -429,9 +442,12 @@ const FILTER_OPERATORS = ['GREATER', 'GREATER_EQUAL', 'LESS', 'LESS_EQUAL'];
 export function filterProblems(f: Partial<FilterSpec> | undefined, what: string): string[] {
   const errors: string[] = [];
   if (!f?.characteristic) errors.push(`${what}: characteristic is required.`);
-  const kinds = [f?.members !== undefined, f?.low !== undefined, f?.value !== undefined].filter(Boolean).length;
-  if (kinds !== 1) errors.push(`${what} (${f?.characteristic}): give exactly one of members, low (with high) or operator with value.`);
+  const kinds = [f?.members !== undefined, f?.nodes !== undefined, f?.low !== undefined, f?.value !== undefined].filter(Boolean).length;
+  if (kinds !== 1) errors.push(`${what} (${f?.characteristic}): give exactly one of members, nodes, low (with high) or operator with value.`);
   if (f?.members !== undefined && (!Array.isArray(f.members) || !f.members.length)) errors.push(`${what} (${f?.characteristic}): members must be a non-empty list.`);
+  if (f?.nodes !== undefined && (!Array.isArray(f.nodes) || !f.nodes.length)) errors.push(`${what} (${f?.characteristic}): nodes must be a non-empty list.`);
+  if (f?.nodes !== undefined && f.exclude) errors.push(`${what} (${f?.characteristic}): hierarchy nodes can only be included; BW turns an excluded node into an included one.`);
+  if (f?.nodeType !== undefined && f?.nodes === undefined) errors.push(`${what} (${f?.characteristic}): nodeType goes with nodes.`);
   if (f?.high !== undefined && f?.low === undefined) errors.push(`${what} (${f?.characteristic}): high without low.`);
   if ((f?.value !== undefined) !== (f?.operator !== undefined)) errors.push(`${what} (${f?.characteristic}): operator and value go together.`);
   if (f?.operator !== undefined && !FILTER_OPERATORS.includes(f.operator)) errors.push(`${what} (${f?.characteristic}): operator must be one of ${FILTER_OPERATORS.join(', ')}.`);
@@ -446,7 +462,10 @@ function filtersXml(filters: FilterSpec[] | undefined): string {
   for (const f of filters) {
     const sign = `<SIGN>${f.exclude ? 'EXCLUDING' : 'INCLUDING'}</SIGN>`;
     let sel: string[];
-    if (f.members) {
+    if (f.nodes) {
+      const type = esc(f.nodeType ?? '0HIER_NODE');
+      sel = f.nodes.map((n) => `<SELECTION type="SINGLE_MEMBER"><MEMBER name="${esc(n)}" type="HIERARCHY_NODE"><NODE_TYPE>${type}</NODE_TYPE></MEMBER></SELECTION>`);
+    } else if (f.members) {
       sel = f.members.map((m) => f.exclude
         ? `<SELECTION type="RANGE" operator="EQUAL">${sign}<VALUE>${member(m)}</VALUE></SELECTION>`
         : `<SELECTION type="SINGLE_MEMBER">${member(m)}</SELECTION>`);
@@ -658,6 +677,28 @@ export const utf16 = (s: string) => new Uint8Array(Buffer.from(s, 'utf16le'));
 export const relXml = (id: string, type: string, target: string) => `<Relationship Id="${id}" Type="${type}" Target="${target}"/>`;
 export const relsDoc = (items: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${items}</Relationships>`;
 
+/**
+ * workbook.xml as the builder edits it: the relationships prefix declared on the root (openpyxl
+ * declares it on each sheet element only, so a sheet added with r:id would be invalid) and an
+ * empty <definedNames/> dropped (names are added in one block).
+ */
+export function normalizeWorkbookXml(wb: string): string {
+  let out = wb.replace(/<definedNames\s*\/>/, '');
+  if (!/<workbook\s[^>]*xmlns:r=/.test(out)) out = out.replace(/<workbook(?=[\s>])/, '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"');
+  return out;
+}
+
+/** Relationship id → target of a .rels part, whatever the attribute order (openpyxl writes Target first). */
+export function relTargets(relsXml: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const [tag] of relsXml.matchAll(/<Relationship\s[^>]*>/g)) {
+    const id = /\sId="([^"]+)"/.exec(tag)?.[1];
+    const target = /\sTarget="([^"]+)"/.exec(tag)?.[1];
+    if (id && target) map.set(id, target);
+  }
+  return map;
+}
+
 export function addRels(parts: Record<string, Uint8Array>, relsPath: string, items: string) {
   parts[relsPath] = strToU8(parts[relsPath] ? strFromU8(parts[relsPath]).replace('</Relationships>', `${items}</Relationships>`) : relsDoc(items));
 }
@@ -683,7 +724,7 @@ const HIDDEN_SHEET = '_com.sap.ip.bi.xl.hiddensheet';
 /** A sheet's custom properties: name → the part holding the value. */
 function sheetProperties(parts: Record<string, Uint8Array>, part: string, xml: string): Map<string, string> {
   const relsPath = relsPartOf(part);
-  const targets = new Map(parts[relsPath] ? [...strFromU8(parts[relsPath]).matchAll(/<Relationship [^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map((m) => [m[1], m[2]]) : []);
+  const targets = parts[relsPath] ? relTargets(strFromU8(parts[relsPath])) : new Map<string, string>();
   const props = new Map<string, string>();
   for (const m of xml.matchAll(/<customPr [^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)) {
     const target = targets.get(m[2]);
@@ -696,7 +737,7 @@ function sheetProperties(parts: Record<string, Uint8Array>, part: string, xml: s
 export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, options: MakeOptions = {}): Uint8Array {
   const parts: Record<string, Uint8Array> = unzipSync(source);
   const text = (n: string) => strFromU8(parts[n]);
-  let wb = text('xl/workbook.xml');
+  let wb = normalizeWorkbookXml(text('xl/workbook.xml'));
   let wbRels = text('xl/_rels/workbook.xml.rels');
 
   // Bridge sheet, added before the sheets are given their AfO ids so it gets one like any other.
@@ -709,7 +750,7 @@ export function makeAfoWorkbook(source: Uint8Array, spec: AfoWorkbookSpec, optio
     wb = wb.replace('</sheets>', () => `<sheet name="${esc(bridge.name)}" sheetId="${Math.max(0, ...ids) + 1}" r:id="rIdAfoAgent"${spec.agentBridge?.hidden ?? true ? ' state="hidden"' : ''}/></sheets>`);
     wbRels = wbRels.replace('</Relationships>', () => relXml('rIdAfoAgent', REL_WS, 'worksheets/afoAgent.xml') + '</Relationships>');
   }
-  const relTarget = new Map([...wbRels.matchAll(/<Relationship [^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map((m) => [m[1], m[2]]));
+  const relTarget = relTargets(wbRels);
 
   // Code names: the workbook and every sheet need one for AfO ids and VBA document modules.
   if (!/<workbookPr[^>]*codeName=/.test(wb)) {

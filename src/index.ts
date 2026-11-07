@@ -29,8 +29,9 @@ The tools unzip .xlsx/.xlsm files and parse or write the AfO definition Analysis
 - afo_open_workbook: open a workbook in Excel on this machine for the user, logged on, with prompt
   values set and the data refreshed (needs Windows, Excel and Analysis for Office). Logon data comes
   from this server's environment, never from arguments.
-- afo_quick_report: ad-hoc report for one query: a plain .xlsx with the query in a crosstab and the
-  prompt values stored, connected as in SAP Logon, opened logged on with the data. Take the query's
+- afo_quick_report: ad-hoc report for one or more queries: a plain .xlsx with each query in a
+  crosstab and the prompt values stored, optionally on a layout workbook (template), connected as
+  in SAP Logon, opened logged on with the data. Take the query's
   variables and valid values from the BW system first (bw-modeling-mcp: bw_get_query,
   bw_get_filter_values); mandatory variables need a value or AfO shows the prompt dialog.
   When Excel waits on a dialog (prompt dialog for a variable without value, AfO logon, message
@@ -74,12 +75,14 @@ const PROMPTS_SCHEMA = {
 
 const FILTERS_SCHEMA = {
   type: 'array',
-  description: 'Stored filters, internal keys (bw_get_filter_values: CHAVL_INT). Each entry has exactly one of members, low(+high) or operator+value; exclude turns it into an exclusion. Several entries for one characteristic combine.',
+  description: 'Stored filters, internal keys (bw_get_filter_values: CHAVL_INT). Each entry has exactly one of members, nodes, low(+high) or operator+value; exclude turns it into an exclusion. Several entries for one characteristic combine. Hierarchy nodes (nodes) need that hierarchy on the characteristic in hierarchies; bw_get_hierarchy shows the node names and which are text nodes.',
   items: {
     type: 'object',
     properties: {
       characteristic: { type: 'string', description: 'Technical name of the characteristic.' },
       members: { type: 'array', items: { type: 'string' }, description: 'Single members.' },
+      nodes: { type: 'array', items: { type: 'string' }, description: 'Hierarchy nodes by node name; the node and everything below it. Included only.' },
+      nodeType: { type: 'string', description: 'Node type of nodes: 0HIER_NODE for text nodes (default), the characteristic of a value node otherwise.' },
       low: { type: 'string', description: 'Interval start.' },
       high: { type: 'string', description: 'Interval end.' },
       operator: { type: 'string', enum: ['GREATER', 'GREATER_EQUAL', 'LESS', 'LESS_EQUAL'] },
@@ -462,28 +465,51 @@ const TOOLS = [
   {
     name: 'afo_quick_report',
     description:
-      'Ad-hoc report for one BW query: writes a plain .xlsx (no macros, so no security bar) with the query in a crosstab and the given prompt values, layout, filters and hierarchies stored, connected the way the SAP Logon landscape of this machine connects to the system (server, SAProuter, SNC), and opens it in Excel logged on with the data (credentials of this server, as afo_open_workbook). Needs Windows, Excel and Analysis for Office. Give values for all mandatory variables (internal keys; bw_get_query lists the variables, bw_get_filter_values the valid keys), otherwise AfO shows the prompt dialog.',
+      'Ad-hoc report for one or more BW queries: writes a plain .xlsx (no macros, so no security bar) with each query in a crosstab and the given prompt values, layout, filters and hierarchies stored, connected the way the SAP Logon landscape of this machine connects to the system (server, SAProuter, SNC), and opens it in Excel logged on with the data (credentials of this server, as afo_open_workbook). Several queries: reports, one crosstab each, on its own sheet by default. A company or customer design comes from template, a layout workbook the crosstabs are placed into. Needs Windows, Excel and Analysis for Office. Give values for all mandatory variables (internal keys; bw_get_query lists the variables, bw_get_filter_values the valid keys), otherwise AfO shows the prompt dialog.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Technical name of the query.' },
+        query: { type: 'string', description: 'Technical name of the query (the first crosstab; the fields below up to compactRows belong to it). Optional when reports lists the queries.' },
+        sheet: { type: 'string', description: 'Sheet of the crosstab of query (default: Report, or the query name when there are several; on a template its first visible sheet).' },
+        cell: { type: 'string', description: 'Top-left cell of the crosstab of query (default B4).' },
         system: { type: 'string', description: 'System id as in SAP Logon (default: the system the logon is configured for).' },
         client: { type: 'string', description: 'Client (default: the configured logon client).' },
         language: { type: 'string', description: 'Logon language (default: the configured one, else DE).' },
         prompts: PROMPTS_SCHEMA,
         axes: {
           type: 'object',
-          description: 'Optional axis layout; characteristics by technical name. Omitted: the query default view.',
+          description: 'Optional axis layout; characteristics by technical name, a key figure structure by its runtime UID (bw_query_data, raw format: the entry with isStructure). Omitted: the query default view.',
           properties: { rows: { type: 'array', items: { type: 'string' } }, columns: { type: 'array', items: { type: 'string' } }, free: { type: 'array', items: { type: 'string' } } },
         },
         filters: FILTERS_SCHEMA,
         hierarchies: HIERARCHIES_SCHEMA,
         compactRows: COMPACT_ROWS_SCHEMA,
+        reports: {
+          type: 'array',
+          description: 'Further queries (or all of them, without query), each in its own crosstab and data source (DS_1, DS_2, ... in this order, query first).',
+          items: {
+            type: 'object',
+            properties: {
+              query: { type: 'string', description: 'Technical name of the query.' },
+              sheet: { type: 'string', description: 'Sheet of the crosstab (default: the query name; on a template the visible sheet at the same position). Several crosstabs may share a sheet at different cells.' },
+              cell: { type: 'string', description: 'Top-left cell of the crosstab (default B4).' },
+              prompts: PROMPTS_SCHEMA,
+              axes: {
+                type: 'object',
+                properties: { rows: { type: 'array', items: { type: 'string' } }, columns: { type: 'array', items: { type: 'string' } }, free: { type: 'array', items: { type: 'string' } } },
+              },
+              filters: FILTERS_SCHEMA,
+              hierarchies: HIERARCHIES_SCHEMA,
+              compactRows: COMPACT_ROWS_SCHEMA,
+            },
+            required: ['query'],
+          },
+        },
+        template: { type: 'string', description: 'Absolute path of a layout workbook (.xlsx, or .xlsm with its macros) the crosstabs are placed into: logo, titles, formats. The sheets named by the crosstabs must exist in it. Without it a plain layout with title and selection above each crosstab is generated.' },
         folder: { type: 'string', description: 'Folder for the workbook (default Documents\AfO Reports).' },
         open: { type: 'boolean', description: 'Open it in Excel logged on (default true); false only writes the file.' },
         timeoutSeconds: { type: 'number', description: 'Overall timeout for opening (default 900).' },
       },
-      required: ['query'],
     },
   },
 ] as const;
@@ -499,7 +525,7 @@ function str(args: Args, key: string): string {
 function runTool(name: string, args: Args): unknown {
   switch (name) {
     case 'afo_quick_report':
-      return quickReport({ ...(args as unknown as QuickReportOptions), query: str(args, 'query') });
+      return quickReport(args as unknown as QuickReportOptions);
     case 'afo_open_workbook':
       return openWorkbook({
         path: str(args, 'path'),
