@@ -1,5 +1,7 @@
 # afo-mcp
 
+[![CI](https://github.com/dnic-dev/afo-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dnic-dev/afo-mcp/actions/workflows/ci.yml)
+
 A Model Context Protocol (MCP) server that lets AI assistants like Claude work with **SAP Analysis for Office (AfO)** workbooks — reading what a workbook contains, building and changing workbooks, and opening them in Excel logged on with fresh data.
 
 Three parts, each usable on its own:
