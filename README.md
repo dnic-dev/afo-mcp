@@ -109,6 +109,8 @@ Reading needs no command: the bridge sheet explains the AfO read formulas and ke
 - An MCP-compatible AI client (Claude Desktop, Claude Code, etc.)
 - For the operate tools only: Windows with Microsoft Excel and SAP Analysis for Office, and the systems in the SAP Logon landscape of that machine
 
+**Tested with** Analysis for Office 2.8 (2.8.2301) on Excel 2021 (16.0.14332), Windows 11 and Windows PowerShell 5.1. The file format was derived from workbooks saved by that release; later releases of Analysis for Office are not verified yet and may store the definition differently. Reports from other versions are welcome as issues.
+
 ---
 
 ## Installation
@@ -199,7 +201,8 @@ It contains no SAP code. The format is not documented by SAP and may change with
 Analysis for Office releases.
 
 The operate tools and the agent bridge change data in your BW system as a user would. Use
-them at your own risk, and test with non-productive systems first.
+them at your own risk, and test with non-productive systems first. What runs where, and who can
+act through the agent bridge, is described in [SECURITY.md](SECURITY.md).
 
 ---
 

@@ -161,6 +161,11 @@ answering *not enabled* means nothing is pending and counts as success. The brid
 holds the help text with commands and rules, live lists of data sources, planning objects and
 dimensions (AfO list formulas, initialised on open), and the last 500 log lines.
 
+**Trust boundary.** The bridge executes what is written into its command cell, with the
+rights of the user who opened the workbook and enabled its macros. Every writer of that cell
+acts as that user, including an agent under prompt injection; the bridge adds no rights and
+no confirmation of its own. See [SECURITY.md](SECURITY.md).
+
 **Retrofit.** `afo_update_workbook` adds the sheet, the defined names and a VBA module to an
 existing workbook and hooks one call into existing `Workbook_Open` and
 `Workbook_SheetCalculate` handlers instead of replacing them.

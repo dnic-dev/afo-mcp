@@ -14,6 +14,7 @@
     "ARCHITECTURE.md",
     "WHATS_NEW.md",
     "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "engines": {
@@ -43,7 +44,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
     "cfb": "^1.2.2",
-    "fast-xml-parser": "^4.5.7",
+    "fast-xml-parser": "^5.12.0",
     "fflate": "^0.8.3"
   },
   "devDependencies": {

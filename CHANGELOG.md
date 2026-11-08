@@ -2,7 +2,7 @@
 
 All notable changes to afo-mcp. The latest release highlights are in the [README](README.md#-whats-new--v100--first-release); earlier ones in [WHATS_NEW.md](WHATS_NEW.md).
 
-## [1.0.0] — unreleased
+## [1.0.0] — 2026-11-08
 
 The first version: reading, building and operating Analysis for Office workbooks.
 

@@ -1,6 +1,6 @@
 ---
 name: afo-agent-bridge
-description: Operate SAP Analysis for Office (AfO) workbooks agentically from inside Excel through their agent bridge - read and analyse data, change variables and selections, filter (by member, interval, list or key figure value), navigate (move dimensions, swap axes, expand and collapse hierarchy nodes, set a drill level), enter plan data (by cell, by member combination or in new lines), run planning functions and sequences, save or discard plan data, trigger workbook buttons and call any other AfO API function. Use in every Excel workbook that has a sheet "AgentLog" or the defined name AfoAgentCommand, or that shows AfO crosstabs (SAP* cell styles, data sources DS_1, DS_2 ...), for any request that touches its data or its SAP connection. Prefer the bridge over Excel features (AutoFilter, sorting, hiding, formulas) on everything Analysis for Office owns.
+description: Operate SAP Analysis for Office (AfO) workbooks agentically from inside Excel through their agent bridge: read and analyse data, change variables and selections, filter, navigate (move dimensions, hierarchy nodes, drill level), enter plan data (by cell, by member combination or in new lines), run planning functions and sequences, save or discard plan data, trigger workbook buttons and call any other AfO API function. Use in every Excel workbook with a sheet "AgentLog", the defined name AfoAgentCommand or AfO crosstabs (SAP* cell styles, data sources DS_1, DS_2 ...), for any request that touches its data or its SAP connection. Prefer the bridge over Excel features (AutoFilter, sorting, hiding, formulas) on everything Analysis for Office owns. For how a query, planning function, variable or model is built in BW, or for BW data the workbook does not show, also use a connected BW MCP server (such as bw-modeling-mcp).
 ---
 
 # Operating Analysis for Office workbooks through the agent bridge
@@ -29,6 +29,32 @@ JavaScript API (Claude in Excel or others) and for any AfO workbook that carries
 3. Read what the request is about (section 3): dimensions with their axes, current filters,
    variable values, members. Map the user's words to technical names this way; never guess a
    technical name.
+4. Check which other tools are connected, above all a **BW MCP server** (for example
+   bw-modeling-mcp, as a connector or MCP tool, tools typically named `bw_…`). The workbook shows
+   only what AfO exposes; a BW MCP server shows the model behind it (section 1a).
+
+## 1a. Beyond the workbook, the BW system
+
+Analysis for Office exposes names, variables, members and results, never how an object is built.
+When a question is about the BW side and a BW MCP server is connected, use it **before** saying
+something cannot be seen, and do not answer from inference when the definition is one call away:
+
+| Question | Read in BW |
+|---|---|
+| How does a planning function or sequence work (type, characteristics to change, FOX code, filter, steps)? | the planning function / sequence |
+| Which aggregation level, provider and characteristics are behind a data source? | the query, then its aggregation level and provider |
+| Why is a cell not input-ready, why did saving change other values? | planning properties of the provider: characteristic relationships, data slices |
+| What does a variable do, where does its default come from? | the variable |
+| Data the workbook does not show: previous years, other queries, master data, hierarchies | query data, master data, hierarchies |
+
+- Map the workbook object to its BW name first: the bridge sheet and `=SAPGetSourceInfo` give the
+  query of a data source; the planning objects carry their BW names in the workbook definition.
+- Reading is fine without asking. Anything that **changes** BW objects or data through the BW
+  MCP server needs the user's explicit go-ahead, like `SAVE`.
+- Saved data in BW does not contain the unsaved plan values of the running session; those exist
+  only in the workbook (section 3). Say which of the two an answer is based on.
+- No BW MCP server connected: say what you can confirm from the workbook, mark everything else as
+  inference, and tell the user that connecting a BW MCP server would let you read the definition.
 
 ## 2. Run commands
 
@@ -106,7 +132,8 @@ are recognisable by their cell style (input-ready styles, typically highlighted)
 
 - **Answer a question about the data:** read the crosstab; if the data needed is not in it,
   change the navigation (`API SAPMoveDimension`, `FILTER`) rather than computing around it in
-  Excel, then read again. Undo navigation the user did not ask to keep.
+  Excel, then read again. Undo navigation the user did not ask to keep. If the question is about
+  how something is built in BW, or needs data outside this workbook, go to section 1a.
 - **Change the selection (period, version, organisational unit …):** `VAR` lines, then `REFRESH`.
   Check with `SAPListOfVariables`.
 - **Restrict what is shown:** members → `FILTER`; a condition on a key figure → `FILTERWHERE`;
